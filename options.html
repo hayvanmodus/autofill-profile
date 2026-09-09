@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>AutoFill Profile — Settings</title>
+<link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <header>
+    <h1>AutoFill Profile</h1>
+    <p class="subtitle">Fill this in once. It's stored only on this device — nothing is sent anywhere.</p>
+  </header>
+
+  <form id="profileForm">
+
+    <section>
+      <h2>Personal details</h2>
+      <div class="field-grid">
+        <label>First name<input type="text" id="firstName" autocomplete="off"></label>
+        <label>Last name<input type="text" id="lastName" autocomplete="off"></label>
+        <label>Email<input type="email" id="email" autocomplete="off"></label>
+        <label>Phone<input type="tel" id="phone" autocomplete="off"></label>
+        <label>City<input type="text" id="city" autocomplete="off"></label>
+        <label>Country<input type="text" id="country" autocomplete="off"></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Links</h2>
+      <div class="field-grid">
+        <label>LinkedIn URL<input type="url" id="linkedin" placeholder="https://linkedin.com/in/…" autocomplete="off"></label>
+        <label>Portfolio URL<input type="url" id="portfolio" placeholder="https://…" autocomplete="off"></label>
+        <label>GitHub URL<input type="url" id="github" placeholder="https://github.com/…" autocomplete="off"></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Education</h2>
+      <div class="field-grid">
+        <label>School<input type="text" id="eduSchool" autocomplete="off"></label>
+        <label>Degree<input type="text" id="eduDegree" placeholder="e.g. B.Sc." autocomplete="off"></label>
+        <label>Field of study<input type="text" id="eduField" autocomplete="off"></label>
+        <label>Graduation year<input type="text" id="eduGradYear" placeholder="e.g. 2022" autocomplete="off"></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Work experience</h2>
+      <div id="workList"></div>
+      <button type="button" class="add-btn" id="addWorkBtn">+ Add work experience</button>
+    </section>
+
+    <section>
+      <h2>Languages</h2>
+      <div id="languagesList"></div>
+      <button type="button" class="add-btn" id="addLanguageBtn">+ Add language</button>
+    </section>
+
+    <section>
+      <h2>Skills</h2>
+      <label>Comma-separated list
+        <input type="text" id="skills" placeholder="e.g. JavaScript, Figma, Project management" autocomplete="off">
+      </label>
+    </section>
+
+    <section>
+      <h2>Long-form answers</h2>
+      <p class="section-hint">Write these once — insert them into applications later.</p>
+      <label>About me
+        <textarea id="aboutMe" placeholder="A short summary about who you are and what you do."></textarea>
+      </label>
+      <label>Why this role
+        <textarea id="whyThisRole" placeholder="A general answer you can tailor per application."></textarea>
+      </label>
+      <label>Strengths
+        <textarea id="strengths" placeholder="Your key strengths, in your own words."></textarea>
+      </label>
+    </section>
+
+    <section>
+      <h2>AI fallback (optional)</h2>
+      <p class="section-hint">
+        Tier 1 matching works offline and covers English, Italian, German and Turkish forms.
+        For anything it misses, an Anthropic API key lets the extension ask Claude to match the
+        remaining fields once per site — results are cached, so it's not called again for the
+        same form. Leave this blank to use Tier 1 only.
+      </p>
+      <label>Anthropic API key
+        <div class="key-row">
+          <input type="password" id="apiKey" placeholder="sk-ant-…" autocomplete="off">
+          <button type="button" class="key-toggle-btn" id="toggleApiKey">Show</button>
+        </div>
+      </label>
+    </section>
+
+    <div class="save-bar">
+      <button type="submit" class="save-btn" id="saveBtn">Save profile</button>
+      <span class="saved-msg" id="savedMsg">Saved ✓</span>
+    </div>
+
+  </form>
+
+  <script src="options.js"></script>
+</body>
+</html>
