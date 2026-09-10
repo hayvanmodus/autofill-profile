@@ -12,6 +12,7 @@ import { importCvFromFile } from './modules/cv-import.js';
     cvFileInput: document.getElementById('cvFileInput'),
     cvImportStatus: document.getElementById('cvImportStatus'),
     cvImportMsg: document.getElementById('cvImportMsg'),
+    cvImportPrivacyHint: document.getElementById('cvImportPrivacyHint'),
     form: document.getElementById('profileForm'),
     firstName: document.getElementById('firstName'),
     lastName: document.getElementById('lastName'),
@@ -51,6 +52,16 @@ import { importCvFromFile } from './modules/cv-import.js';
     el.apiKey.type = showing ? 'password' : 'text';
     el.toggleApiKey.textContent = showing ? 'Show' : 'Hide';
   });
+
+  // Shown/hidden as the API key field changes so the CV Import section
+  // always accurately reflects whether uploading a CV will send its text
+  // to the Anthropic API (see runCvImport) — disclosed before upload, not
+  // after.
+  function updateCvPrivacyHint() {
+    el.cvImportPrivacyHint.hidden = !el.apiKey.value.trim();
+  }
+
+  el.apiKey.addEventListener('input', updateCvPrivacyHint);
 
   function esc(str) {
     var div = document.createElement('div');
@@ -214,6 +225,7 @@ import { importCvFromFile } from './modules/cv-import.js';
 
   function renderSettings(settings) {
     el.apiKey.value = (settings && settings.anthropicApiKey) || '';
+    updateCvPrivacyHint();
   }
 
   function collectSettings() {
@@ -300,6 +312,23 @@ import { importCvFromFile } from './modules/cv-import.js';
     if (value) inputEl.value = value;
   }
 
+  // Merges CV-derived entries into a list already on the form instead of
+  // replacing it outright, so importing a CV never silently discards a
+  // returning user's previously saved work experience/languages/skills —
+  // it only adds entries the list doesn't already have (by keyFn).
+  function mergeEntries(existing, incoming, keyFn) {
+    var seen = {};
+    existing.forEach(function (item) { seen[keyFn(item)] = true; });
+    var merged = existing.slice();
+    incoming.forEach(function (item) {
+      var key = keyFn(item);
+      if (seen[key]) return;
+      seen[key] = true;
+      merged.push(item);
+    });
+    return merged;
+  }
+
   function fillFormFromPartialProfile(profile) {
     var p = profile.personal || {};
     setIfPresent(el.firstName, p.firstName);
@@ -325,17 +354,25 @@ import { importCvFromFile } from './modules/cv-import.js';
     setIfPresent(el.eduGradYear, edu.gradYear);
 
     if (profile.workExperience && profile.workExperience.length) {
-      workList = profile.workExperience.slice();
+      captureWorkList();
+      workList = mergeEntries(workList, profile.workExperience, function (w) {
+        return (w.company || '').trim().toLowerCase() + '|' + (w.position || '').trim().toLowerCase() + '|' + (w.startDate || '');
+      });
       renderWorkList();
     }
 
     if (profile.languages && profile.languages.length) {
-      languagesList = profile.languages.slice();
+      captureLanguagesList();
+      languagesList = mergeEntries(languagesList, profile.languages, function (l) {
+        return (l.language || '').trim().toLowerCase();
+      });
       renderLanguagesList();
     }
 
     if (profile.skills && profile.skills.length) {
-      el.skills.value = profile.skills.join(', ');
+      var existingSkills = el.skills.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+      var mergedSkills = mergeEntries(existingSkills, profile.skills, function (s) { return s.trim().toLowerCase(); });
+      el.skills.value = mergedSkills.join(', ');
     }
   }
 

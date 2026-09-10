@@ -3,16 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <title>AutoFill Profile — Settings</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <header>
     <h1>AutoFill Profile</h1>
     <p class="subtitle">Set this up once. Every form after that is one click.</p>
-    <p class="subtitle-sub">Stored on your device only.</p>
+    <p class="subtitle-sub">Your profile is stored on your device only. Nothing is sent anywhere unless you opt into the API key features below.</p>
   </header>
 
   <p class="page-hint">Fill in only what you need.</p>
@@ -21,6 +18,9 @@
     <h2>Import from CV</h2>
     <p class="section-hint">
       Optional — upload a CV (PDF) to prefill the fields below, or skip this and fill them in by hand.
+    </p>
+    <p class="section-hint cv-import-privacy-hint" id="cvImportPrivacyHint" hidden>
+      An Anthropic API key is set, so the text of your CV will be sent to the Anthropic API to extract your details.
     </p>
     <div class="cv-import-row">
       <input type="file" id="cvFileInput" accept="application/pdf,.pdf">

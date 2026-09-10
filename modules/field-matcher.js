@@ -96,7 +96,7 @@
   var PHONE_CODE_PHRASES = {
     en: ['phone code', 'dialing code', 'calling code', 'country code', 'country phone code', 'international dialing code'],
     it: ['prefisso telefonico', 'prefisso internazionale', 'prefisso paese'],
-    de: ['landesvorwahl', 'telefonvorwahl', 'laendercode'],
+    de: ['landesvorwahl', 'telefonvorwahl', 'laendercode', 'landercode'],
     tr: ['telefon kodu', 'ulke kodu', 'cevirme kodu']
   };
 
@@ -123,12 +123,20 @@
     country: [].concat(PHONE_CODE_PHRASES.en, PHONE_CODE_PHRASES.it, PHONE_CODE_PHRASES.de, PHONE_CODE_PHRASES.tr)
   };
 
+  // A negative phrase immediately preceded by a negation/disambiguation cue
+  // ("First Name (not middle name)", "First or preferred name") is the
+  // field disambiguating itself IN FAVOR of the id being scored, not asking
+  // for the qualifier — so it must not veto. A bare qualifier with no such
+  // cue ("Legal Middle Name", "I have a preferred name") still does.
+  var NEGATIVE_CONTEXT_CUE_RE = /\b(not|no|non|nicht|kein|keine|degil|değil|or)\s*$/;
+
   function hasNegativeContext(ctx, negativeKeywords) {
     for (var source in SOURCE_WEIGHTS) {
       var text = ctx[source];
       if (!text) continue;
       for (var i = 0; i < negativeKeywords.length; i++) {
-        if (negativeKeywords[i].test(text)) return true;
+        var m = negativeKeywords[i].exec(text);
+        if (m && !NEGATIVE_CONTEXT_CUE_RE.test(text.slice(0, m.index))) return true;
       }
     }
     return false;

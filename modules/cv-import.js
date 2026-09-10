@@ -30,24 +30,45 @@ var LEVELS = ['Basic', 'Intermediate', 'Advanced', 'Fluent', 'Native'];
 // position so heading/regex-based parsing below has real line boundaries
 // to work with.
 
+// A gap this many PDF points wide between two items on the same line is a
+// column break (e.g. a company name on the left, its city/country
+// right-aligned on the right), not normal word-spacing — pdf.js gives us
+// each item's x-coordinate, not the original space characters, so a double
+// space is inserted here to carry that signal forward. Without it,
+// stripTrailingLocation below has no way to tell a company name from its
+// trailing location once everything is joined into one line of text.
+var COLUMN_GAP_THRESHOLD = 20;
+
 function groupItemsIntoLines(items) {
   var lines = [];
   var current = null;
   var lastY = null;
+  var lastEndX = null;
 
   for (var i = 0; i < items.length; i++) {
     var item = items[i];
+    var x = item.transform ? item.transform[4] : 0;
     var y = item.transform ? item.transform[5] : 0;
     if (lastY === null || Math.abs(y - lastY) > 2) {
       current = [];
       lines.push(current);
       lastY = y;
+      lastEndX = null;
     }
-    if (item.str) current.push(item.str);
+    if (item.str) {
+      if (lastEndX !== null && (x - lastEndX) > COLUMN_GAP_THRESHOLD) current.push('  ');
+      current.push(item.str);
+      lastEndX = x + (item.width || 0);
+    }
   }
 
   return lines
-    .map(function (parts) { return parts.join(' ').replace(/\s+/g, ' ').trim(); })
+    .map(function (parts) {
+      return parts.join(' ')
+        .replace(/ {2,}/g, '  ') // collapse any run of 2+ spaces to a canonical double space (still >= 2, so a real column-gap marker survives) rather than to a single space
+        .replace(/[^\S ]+/g, ' ') // other whitespace (tabs, etc.) is still just word-spacing
+        .trim();
+    })
     .filter(Boolean);
 }
 
@@ -113,6 +134,14 @@ function str(v) {
   return (typeof v === 'string') ? v.trim() : '';
 }
 
+// <input type="month"> (options.js's renderWorkList) only accepts "YYYY-MM"
+// — a bare "YYYY" is silently coerced to "" by the browser, so a year-only
+// date has to be given a month to survive being rendered into the form.
+function coerceMonthDate(v) {
+  if (/^\d{4}$/.test(v)) return v + '-01';
+  return v;
+}
+
 function sanitizeApiProfile(raw) {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -153,8 +182,8 @@ function sanitizeApiProfile(raw) {
         return {
           company: str(w && w.company),
           position: str(w && w.position),
-          startDate: str(w && w.startDate),
-          endDate: str(w && w.endDate)
+          startDate: coerceMonthDate(str(w && w.startDate)),
+          endDate: coerceMonthDate(str(w && w.endDate))
         };
       })
       .filter(function (w) { return w.company || w.position; }),
@@ -169,6 +198,8 @@ function sanitizeApiProfile(raw) {
   };
 }
 
+var API_TIMEOUT_MS = 45000;
+
 async function extractProfileViaApi(text, apiKey) {
   var body = {
     model: ANTHROPIC_MODEL,
@@ -178,16 +209,25 @@ async function extractProfileViaApi(text, apiKey) {
     messages: [{ role: 'user', content: text.slice(0, 15000) }]
   };
 
-  var res = await fetch(ANTHROPIC_URL, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true'
-    },
-    body: JSON.stringify(body)
-  });
+  var controller = new AbortController();
+  var timeoutId = setTimeout(function () { controller.abort(); }, API_TIMEOUT_MS);
+
+  var res;
+  try {
+    res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
     var errText = await res.text().catch(function () { return ''; });
@@ -205,13 +245,13 @@ async function extractProfileViaApi(text, apiKey) {
 // Same language set as field-matcher.js's KEYWORD_PACKS (en, it, de, tr).
 
 var EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
-var PHONE_RE = /(\+?\d[\d .()\-]{7,}\d)/;
+var PHONE_RE = /(\+?\d[\d .()\-]{7,}\d)/g;
 
 var CV_TITLE_LINES = ['curriculum vitae', 'resume', 'cv', 'lebenslauf', 'özgeçmiş', 'ozgecmis'];
 
 // Label words for lines/headings about languages, certifications and
-// interests, covering the same 7 languages throughout (en, it, de, tr, es,
-// fr, nl). Used two ways below: as SECTION_HEADINGS entries (a bare
+// interests, covering all 8 supported languages (en, it, de, tr, es, fr,
+// pt, nl). Used two ways below: as SECTION_HEADINGS entries (a bare
 // "Certifications" line on its own, with no colon) and, for the inline
 // case, by extractInlineLabeledContent ("Certifications: AWS SA, Scrum
 // Master" sitting inside another section). Without both forms recognized,
@@ -220,11 +260,11 @@ var CV_TITLE_LINES = ['curriculum vitae', 'resume', 'cv', 'lebenslauf', 'özgeç
 // it; neither certifications nor interests has a matching profile field, so
 // both are simply dropped once recognized rather than stored anywhere.
 var INLINE_LABELS = {
-  languages: ['languages', 'lingue', 'sprachen', 'diller', 'idiomas', 'langues', 'talen'],
+  languages: ['languages', 'lingue', 'sprachen', 'diller', 'idiomas', 'langues', 'idiomas', 'línguas', 'linguas', 'talen'],
   certifications: [
     'certifications', 'certificates',
     'certificazioni', 'zertifikate', 'zertifizierungen',
-    'sertifikalar', 'certificaciones', 'certificats', 'certificaten'
+    'sertifikalar', 'certificaciones', 'certificats', 'certificados', 'certificações', 'certificacoes', 'certificaten'
   ],
   interests: [
     'interests', 'hobbies',
@@ -238,26 +278,90 @@ var SECTION_HEADINGS = {
     'education', 'academic background',
     'istruzione', 'formazione', 'formazione accademica',
     'ausbildung', 'bildung', 'akademischer werdegang',
-    'eğitim', 'egitim'
+    'eğitim', 'egitim',
+    'educacion', 'educación', 'formacion academica', 'formación académica',
+    'formation', 'formation academique', 'formation académique', 'parcours academique',
+    'formação', 'formacao', 'formação académica', 'formacao academica',
+    'opleiding', 'onderwijs'
   ],
   experience: [
     'work experience', 'experience', 'professional experience', 'employment history',
     'esperienza lavorativa', 'esperienza professionale', 'esperienza',
     'berufserfahrung', 'arbeitserfahrung',
-    'iş deneyimi', 'is deneyimi', 'deneyim'
+    'iş deneyimi', 'is deneyimi', 'deneyim',
+    'experiencia laboral', 'experiencia profesional', 'experiencia',
+    'expérience professionnelle', 'experience professionnelle', 'expérience', 'parcours professionnel',
+    'experiência profissional', 'experiencia profissional', 'experiência',
+    'werkervaring', 'ervaring'
   ],
   skills: [
     'skills', 'technical skills', 'key skills',
     'competenze', 'abilità', 'abilita',
     'kenntnisse', 'fähigkeiten', 'fahigkeiten',
-    'yetenekler', 'beceriler'
+    'yetenekler', 'beceriler',
+    'habilidades', 'competencias', 'aptitudes',
+    'compétences', 'competences', 'compétences techniques', 'competences techniques',
+    'competências', 'habilidades tecnicas', 'habilidades técnicas',
+    'vaardigheden'
   ],
   languages: INLINE_LABELS.languages,
   // Recognized as headings purely so their content is diverted away from
   // whichever section precedes them (see extractProfileByPattern, which
-  // never reads sections.certifications/sections.interests).
+  // never reads sections.certifications/sections.interests, and so
+  // splitIntoSections correctly stops accumulating lines for the section
+  // above once one of these appears — e.g. a "PROJECTS" heading after
+  // "EXPERIENCE" must not let the project entries leak into workExperience).
   certifications: INLINE_LABELS.certifications,
-  interests: INLINE_LABELS.interests
+  interests: INLINE_LABELS.interests,
+  projects: [
+    'projects', 'personal projects', 'academic projects',
+    'progetti', 'progetti personali',
+    'projekte', 'persönliche projekte', 'personliche projekte',
+    'projeler', 'kişisel projeler', 'kisisel projeler',
+    'proyectos', 'proyectos personales',
+    'projets', 'projets personnels',
+    'projetos', 'projectos', 'projetos pessoais',
+    'projecten'
+  ],
+  references: [
+    'references',
+    'referenze',
+    'referenzen',
+    'referanslar',
+    'referencias',
+    'références',
+    'referências',
+    'referenties'
+  ],
+  volunteering: [
+    'volunteering', 'volunteer experience', 'volunteer work',
+    'volontariato', 'esperienza di volontariato',
+    'ehrenamtliche tätigkeit', 'ehrenamtliche tatigkeit', 'ehrenamt',
+    'gönüllülük', 'gonulluluk', 'gönüllü deneyimi', 'gonullu deneyimi',
+    'voluntariado', 'experiencia de voluntariado',
+    'bénévolat', 'benevolat', 'expérience bénévole', 'experience benevole',
+    'experiência de voluntariado', 'experiencia de voluntariado',
+    'vrijwilligerswerk'
+  ],
+  awards: [
+    'awards', 'honors', 'honours', 'awards and honors',
+    'premi', 'riconoscimenti',
+    'auszeichnungen',
+    'ödüller', 'odüller', 'oduller',
+    'premios', 'reconocimientos',
+    'récompenses', 'recompenses', 'distinctions',
+    'prêmios', 'distinções', 'distincoes',
+    'prijzen', 'onderscheidingen'
+  ],
+  publications: [
+    'publications',
+    'pubblicazioni',
+    'veröffentlichungen', 'veroffentlichungen', 'publikationen',
+    'yayınlar', 'yayinlar',
+    'publicaciones',
+    'publicações', 'publicacoes',
+    'publicaties'
+  ]
 };
 
 function escapeRegExp(str) {
@@ -445,16 +549,174 @@ function mergeLanguageLists() {
   return order.map(function (k) { return byKey[k]; }).slice(0, 10);
 }
 
+// console.log wrapper for the pattern-based work-experience parser below —
+// lets a real CV be checked line-by-line against what the parser saw and
+// why it made each call, since CV layouts vary too much to get right by
+// inspection alone.
+function logCv() {
+  var args = Array.prototype.slice.call(arguments);
+  console.log.apply(console, ['[cv-import]'].concat(args));
+}
+
+// ---- Month names (en, it, de, tr, es, fr, pt, nl) -------------------------
+// Full names + common abbreviations, used to recognize "February 2026"-style
+// dates alongside the purely numeric forms. Every entry maps to the same
+// month across languages, so overlapping abbreviations (e.g. "mar" for both
+// Italian and Spanish March) are harmless.
+var MONTH_NAMES = {
+  '01': ['january', 'jan', 'gennaio', 'gen', 'januar', 'ocak', 'oca', 'enero', 'ene', 'janvier', 'janv', 'janeiro', 'januari'],
+  '02': ['february', 'feb', 'febbraio', 'februar', 'şubat', 'subat', 'şub', 'sub', 'febrero', 'février', 'fevrier', 'févr', 'fevr', 'fevereiro', 'fev', 'februari'],
+  '03': ['march', 'mar', 'marzo', 'märz', 'marz', 'mär', 'mart', 'mars', 'março', 'marco', 'maart'],
+  '04': ['april', 'apr', 'aprile', 'nisan', 'nis', 'abril', 'avril', 'avr'],
+  '05': ['may', 'maggio', 'mag', 'mai', 'mayıs', 'mayis', 'mayo', 'maio', 'mei'],
+  '06': ['june', 'jun', 'giugno', 'giu', 'juni', 'haziran', 'haz', 'junio', 'juin', 'junho'],
+  '07': ['july', 'jul', 'luglio', 'lug', 'juli', 'temmuz', 'tem', 'julio', 'juillet', 'juil', 'julho'],
+  '08': ['august', 'aug', 'agosto', 'ago', 'ağustos', 'agustos', 'ağu', 'agu', 'août', 'aout', 'augustus'],
+  '09': ['september', 'sep', 'sept', 'settembre', 'set', 'eylül', 'eylul', 'eyl', 'septiembre', 'septembre', 'setembro'],
+  '10': ['october', 'oct', 'ottobre', 'ott', 'oktober', 'okt', 'ekim', 'eki', 'octubre', 'octobre', 'outubro', 'out'],
+  '11': ['november', 'nov', 'novembre', 'kasım', 'kasim', 'kas', 'noviembre', 'novembro'],
+  '12': ['december', 'dec', 'dicembre', 'dic', 'dezember', 'dez', 'aralık', 'aralik', 'ara', 'diciembre', 'décembre', 'decembre', 'déc']
+};
+
+var MONTH_NAME_TO_NUM = {};
+var MONTH_WORDS_ALL = [];
+Object.keys(MONTH_NAMES).forEach(function (num) {
+  MONTH_NAMES[num].forEach(function (w) {
+    MONTH_NAME_TO_NUM[w] = num;
+    MONTH_WORDS_ALL.push(w);
+  });
+});
+// Longest-first is only a readability nicety here — the \b-anchored,
+// case-insensitive alternation below already can't have a short word
+// (e.g. "mar") shadow a longer one (e.g. "march") since \b requires a word
+// boundary right after the match.
+MONTH_WORDS_ALL.sort(function (a, b) { return b.length - a.length; });
+
+var MONTH_NAME_SRC = '(?:' + MONTH_WORDS_ALL.map(escapeRegExp).join('|') + ')';
+var MONTH_NAME_SRC_CAP = '(' + MONTH_WORDS_ALL.map(escapeRegExp).join('|') + ')';
+
+function monthNameToNumber(word) {
+  return MONTH_NAME_TO_NUM[turkishSafeLower(word || '')] || null;
+}
+
+// ---- "Ongoing" words (en, it, de, tr, es, fr, pt, nl) ----------------------
+var ONGOING_WORDS = [
+  'present', 'current', 'ongoing', 'to date', 'till date',
+  'oggi', 'attuale', 'attualmente', 'in corso',
+  'heute', 'aktuell', 'laufend',
+  'devam', 'günümüz', 'gunumuz', 'halen',
+  'actualidad', 'actual', 'presente', 'hoy',
+  'aujourd\'hui', 'actuelle', 'en cours',
+  'atual', 'atualmente', 'hoje',
+  'heden', 'huidig', 'huidige', 'nu'
+];
+var ONGOING_SRC = '(?:' + ONGOING_WORDS.map(escapeRegExp).join('|') + ')';
+var ONGOING_RE = new RegExp('\\b' + ONGOING_SRC + '\\b', 'i');
+
+function isOngoingToken(text) {
+  return ONGOING_RE.test(text || '');
+}
+
+// ---- Date tokens and ranges -------------------------------------------
+// A single date mention, in decreasing specificity: "Month YYYY" / "YYYY
+// Month" (either order), numeric "YYYY-MM" / "MM-YYYY" (dash, slash or dot),
+// then a bare year. Two of these either side of a separator (dash/en
+// dash/em dash, or "to"/"a"/"à"/"au"/"bis"/"ile"/"hasta"/"até"/"tot"/"t/m")
+// is a work-experience date range, wherever it sits in the line — on its
+// own, after a title/company, or parenthesized.
+var DATE_TOKEN_SRC = '(?:' +
+  MONTH_NAME_SRC + '\\.?\\s+(?:19|20)\\d{2}' + '|' +
+  '(?:19|20)\\d{2}\\s+' + MONTH_NAME_SRC + '\\.?' + '|' +
+  '(?:19|20)\\d{2}[-/.]\\d{1,2}' + '|' +
+  '\\d{1,2}[-/.](?:19|20)\\d{2}' + '|' +
+  '(?:19|20)\\d{2}' +
+  ')';
+
+// Plain \b treats only [A-Za-z0-9_] as "word" characters, so it silently
+// fails to anchor next to a letter like "à" or "é" (e.g. /\bà\b/.test("2019
+// à 2021") is false) — which would otherwise make the French/Portuguese
+// separator words below never match. wordBoundary() uses a Unicode-aware
+// lookaround instead (requires DATE_RANGE_RE's "u" flag).
+function wordBoundary(src) {
+  return '(?<![\\p{L}\\p{N}])' + src + '(?![\\p{L}\\p{N}])';
+}
+
+var DATE_SEP_SRC = '(?:-|–|—|' + [
+  'to', 'a', 'à', 'au', 'bis', 'ile', 'hasta', 'at[eé]', 'tot', 't\\/m'
+].map(wordBoundary).join('|') + ')';
+
 var DATE_RANGE_RE = new RegExp(
-  '((?:19|20)\\d{2}(?:[-/.]\\d{1,2})?)\\s*(?:-|–|—|to|a|bis|ile)\\s*' +
-  '((?:19|20)\\d{2}(?:[-/.]\\d{1,2})?|present|current|ongoing|oggi|attuale|heute|devam|günümüz|gunumuz)',
-  'i'
+  '(' + DATE_TOKEN_SRC + ')\\s*' + DATE_SEP_SRC + '\\s*(' + DATE_TOKEN_SRC + '|' + ONGOING_SRC + ')',
+  'iu'
 );
 
-var ONGOING_RE = /present|current|ongoing|oggi|attuale|heute|devam|günümüz|gunumuz/i;
+var MONTH_YEAR_RE = new RegExp('^' + MONTH_NAME_SRC_CAP + '\\.?\\s+((?:19|20)\\d{2})$', 'i');
+var YEAR_MONTH_RE = new RegExp('^((?:19|20)\\d{2})\\s+' + MONTH_NAME_SRC_CAP + '\\.?$', 'i');
+
+// Normalizes one date token (one side of a DATE_RANGE_RE match) to
+// "YYYY-MM", or a bare "YYYY" (later coerced to "YYYY-01" — see
+// coerceMonthDate) when only a year is known. Returns null if the token
+// isn't a recognized date shape (shouldn't happen for text DATE_RANGE_RE
+// already matched, but kept defensive since it's also reachable directly).
+function parseDateToken(raw) {
+  var t = (raw || '').trim();
+  if (!t) return null;
+
+  var mn = t.match(MONTH_YEAR_RE);
+  if (mn) {
+    var num = monthNameToNumber(mn[1]);
+    if (num) return mn[2] + '-' + num;
+  }
+
+  var nm = t.match(YEAR_MONTH_RE);
+  if (nm) {
+    var num2 = monthNameToNumber(nm[2]);
+    if (num2) return nm[1] + '-' + num2;
+  }
+
+  var ym = t.match(/^((?:19|20)\d{2})[-/.](\d{1,2})$/);
+  if (ym) return ym[1] + '-' + (ym[2].length === 1 ? '0' + ym[2] : ym[2]);
+
+  var my = t.match(/^(\d{1,2})[-/.]((?:19|20)\d{2})$/);
+  if (my) return my[2] + '-' + (my[1].length === 1 ? '0' + my[1] : my[1]);
+
+  var y = t.match(/^(?:19|20)\d{2}$/);
+  if (y) return coerceMonthDate(t);
+
+  return null;
+}
+
+// PHONE_RE's char class (digits, spaces, dots, parens, dashes) also matches
+// date ranges like "2015 - 2020" or "01.2015 - 12.2020" — a real phone
+// number has more digits than a year range, and a date-range-shaped
+// candidate is never one, so both checks guard against picking up a date
+// that happens to appear before the actual phone number in the CV text.
+function looksLikePhone(candidate) {
+  var digitCount = (candidate.match(/\d/g) || []).length;
+  if (digitCount < 9) return false;
+  if (DATE_RANGE_RE.test(candidate)) return false;
+  return true;
+}
+
+function findPhone(text) {
+  var matches = text.match(PHONE_RE);
+  if (!matches) return '';
+  for (var i = 0; i < matches.length; i++) {
+    if (looksLikePhone(matches[i])) return matches[i].trim();
+  }
+  return '';
+}
+
+// Plain toLowerCase() maps Turkish 'İ' (dotted capital I) to 'i' + a
+// combining dot above (per Unicode SpecialCasing), not plain 'i' — breaking
+// substring/heading comparisons against the plain-ASCII words below. Strip
+// it to a plain 'i' first so heading/label matching works for Turkish CVs.
+function turkishSafeLower(s) {
+  return String(s).replace(/İ/g, 'i').toLowerCase();
+}
 
 function normalizeLine(line) {
-  return line.toLowerCase().replace(/[.:]+$/, '').trim();
+  return turkishSafeLower(line).replace(/[.:]+$/, '').trim();
 }
 
 function isHeadingLine(line, headingWords) {
@@ -464,6 +726,27 @@ function isHeadingLine(line, headingWords) {
     if (norm === headingWords[i] || norm.indexOf(headingWords[i]) === 0) return true;
   }
   return false;
+}
+
+// General "is this line a section heading at all" check, used by
+// extractWorkExperience to stop at the end of the experience section even
+// for a heading not in any SECTION_HEADINGS list (or a language/spelling
+// not covered there) — matches against every known heading word across all
+// categories, or falls back to "the line is short and entirely uppercase",
+// which is how a heading usually reads regardless of language. Only called
+// on a line that has already passed looksLikeHeaderLine (starts with a
+// capital, no trailing period), so a bullet's wrapped continuation — which
+// almost always fails that check first — never reaches this at all.
+function isAnySectionHeading(line) {
+  var norm = normalizeLine(line);
+  if (!norm || norm.length > 40) return false;
+
+  for (var key in SECTION_HEADINGS) {
+    if (isHeadingLine(line, SECTION_HEADINGS[key])) return true;
+  }
+
+  var letters = line.replace(/[^\p{L}]/gu, '');
+  return letters.length >= 3 && letters === letters.toUpperCase() && letters !== letters.toLowerCase();
 }
 
 // Splits the CV into named sections by scanning for heading lines; text
@@ -531,45 +814,310 @@ function extractEducation(lines) {
   return { school: school, degree: degree, field: field, gradYear: gradYear };
 }
 
-function parseDateFragment(fragment) {
-  if (ONGOING_RE.test(fragment)) return '';
-  var m = fragment.match(/^(\d{4})[-/.](\d{1,2})$/);
-  if (m) return m[1] + '-' + (m[2].length === 1 ? '0' + m[2] : m[2]);
-  var y = fragment.match(/^\d{4}$/);
-  if (y) return y[0];
-  return '';
+// A description/bullet line under a job — starts with a bullet glyph (or a
+// bare "-", the most common PDF-extraction fallback for "•"). These never
+// start a new entry and are never scanned for dates, so a sentence like
+// "- Grew revenue 20% from 2019 to 2021" can't be mistaken for a new job's
+// header/date line.
+function isBulletLine(line) {
+  return /^[-–—•*●▪◦‣∙·]\s/.test(line);
 }
 
+// Heuristic signal for "this header line is a job title, not a company
+// name" — used only to decide which of two ambiguous header lines is the
+// position vs. the company (see classifyHeaderPair/splitCombinedHeaderLine).
+// Not exhaustive by design: a false negative just falls through to the
+// default ordering below, which still gets the common cases right.
+var JOB_TITLE_WORDS = [
+  'intern', 'manager', 'engineer', 'developer', 'designer', 'analyst', 'specialist',
+  'coordinator', 'assistant', 'director', 'officer', 'consultant', 'executive',
+  'lead', 'representative', 'associate', 'supervisor',
+  'stagista', 'tirocinante', 'ingegnere', 'sviluppatore', 'analista', 'specialista',
+  'coordinatore', 'assistente', 'direttore', 'responsabile', 'consulente',
+  'praktikant', 'praktikantin', 'ingenieur', 'entwickler', 'spezialist', 'koordinator',
+  'direktor', 'leiter', 'berater',
+  'stajyer', 'uzman', 'mühendis', 'muhendis', 'geliştirici', 'gelistirici',
+  'koordinatör', 'asistan', 'müdür', 'mudur', 'danışman', 'danisman', 'temsilci',
+  'becario', 'gerente', 'ingeniero', 'desarrollador', 'especialista', 'coordinador',
+  'director', 'consultor',
+  'stagiaire', 'ingénieur', 'développeur', 'developpeur', 'analyste', 'spécialiste',
+  'specialiste', 'coordinateur', 'consultant', 'responsable',
+  'estagiário', 'estagiario', 'engenheiro', 'desenvolvedor', 'coordenador', 'diretor',
+  'stagiair', 'ontwikkelaar', 'analist', 'coördinator', 'adviseur'
+];
+var JOB_TITLE_HINT_RE = new RegExp('\\b(?:' + JOB_TITLE_WORDS.map(escapeRegExp).join('|') + ')\\b', 'i');
+
+// Heuristic signal for "this header line is a company name" — common legal
+// entity suffixes. Same role as JOB_TITLE_HINT_RE above: a tie-breaker, not
+// a classifier on its own.
+var COMPANY_SUFFIX_WORDS_SRC = 'inc|llc|ltd|gmbh|corp|plc|sarl|s\\.?r\\.?l\\.?|s\\.?p\\.?a\\.?|s\\.?a\\.?|s\\.?l\\.?|b\\.?v\\.?|n\\.?v\\.?|kg|ag|oy|aps|kft|lda|ltda|a\\.?ş\\.?|şti';
+var COMPANY_SUFFIX_RE = new RegExp('\\b(?:' + COMPANY_SUFFIX_WORDS_SRC + ')\\b\\.?', 'i');
+// Same suffix list, anchored to the end of the string — used to allow a
+// trailing period on a company candidate ONLY when it's a real abbreviation
+// ("Inc.", "Corp.", "A.Ş."), not the tail of an unrelated sentence.
+var COMPANY_SUFFIX_TAIL_RE = new RegExp('\\b(?:' + COMPANY_SUFFIX_WORDS_SRC + ')\\.?$', 'i');
+
+// Whether a line plausibly starts a new header (company/position), as
+// opposed to being the tail of a bullet's sentence that wrapped onto its
+// own physical line with no bullet glyph of its own — PDF text extraction
+// produces one array entry per visual line, so a long bullet reads as
+// several unprefixed lines in a row. A real company/position starts with a
+// capitalized word and doesn't end mid-sentence with a period; a wrapped
+// continuation usually does neither. A trailing period is still allowed
+// when it's a recognized company-suffix abbreviation ("Inc.", "Corp.",
+// "A.Ş."), since those are common and legitimate. Used both to decide when
+// a run of bullet lines has ended (see extractWorkExperience) and, as a
+// last check, to reject a company value built from a false-positive header
+// line (see buildWorkEntry).
+function looksLikeHeaderLine(text) {
+  var t = (text || '').trim();
+  if (!t || !/^\p{Lu}/u.test(t)) return false;
+  if (!/\.$/.test(t)) return true;
+  return COMPANY_SUFFIX_TAIL_RE.test(t);
+}
+
+// Stricter than looksLikeHeaderLine, with no trailing-period exception —
+// used only to validate a position value, since job titles don't
+// legitimately end with an abbreviated legal-entity suffix the way company
+// names do.
+function looksLikeValidPosition(text) {
+  var t = (text || '').trim();
+  if (!t) return false;
+  if (/\.$/.test(t)) return false;
+  return /^\p{Lu}/u.test(t);
+}
+
+// "City, Country" or "City, ST" — one or two comma-separated parts, each 1-4
+// capitalized words. Deliberately narrower than "starts with a capital
+// letter": a company line can just as easily have a second capitalized word
+// after a wide gap (e.g. a second column that isn't a location at all), so
+// only text that's actually comma-shaped like a place name counts.
+var LOCATION_RE = new RegExp(
+  '^\\p{Lu}[\\p{L}.\'-]*(?:\\s+\\p{Lu}[\\p{L}.\'-]*){0,3}\\s*,\\s*\\p{Lu}[\\p{L}.\'-]*(?:\\s+\\p{Lu}[\\p{L}.\'-]*){0,3}$',
+  'u'
+);
+
+function looksLikeLocation(text) {
+  return LOCATION_RE.test(text.trim());
+}
+
+// Strips a trailing "City, Country" from a company line that has its
+// location packed onto the same line, separated by a wide gap (a common PDF
+// text-extraction artifact from column-aligned CV layouts, preserved as a
+// double space by groupItemsIntoLines above) — e.g. "Acme Corp  Istanbul,
+// Turkey" -> "Acme Corp". Splits on the LAST such gap, since the location is
+// the part that sits at the end of the line; left alone if what follows the
+// gap doesn't actually look like a place name.
+function stripTrailingLocation(line) {
+  var parts = line.split(/ {2,}/);
+  if (parts.length < 2) return line;
+
+  var right = parts[parts.length - 1].trim();
+  var left = parts.slice(0, -1).join(' ').trim();
+  return (left && looksLikeLocation(right)) ? left : line;
+}
+
+// Decides which of two header lines (already known to be company vs.
+// position, in some order — no date/bullet on either) is which, using
+// JOB_TITLE_HINT_RE/COMPANY_SUFFIX_RE as tie-breakers. Falls back to the
+// conventional "company, then position" order when neither line has a
+// signal either way.
+function classifyHeaderPair(line1, line2) {
+  var l1Title = JOB_TITLE_HINT_RE.test(line1);
+  var l2Title = JOB_TITLE_HINT_RE.test(line2);
+  if (l2Title && !l1Title) return { company: line1, position: line2, reason: 'title word on 2nd line' };
+  if (l1Title && !l2Title) return { company: line2, position: line1, reason: 'title word on 1st line' };
+
+  var l1Company = COMPANY_SUFFIX_RE.test(line1);
+  var l2Company = COMPANY_SUFFIX_RE.test(line2);
+  if (l1Company && !l2Company) return { company: line1, position: line2, reason: 'company-suffix on 1st line' };
+  if (l2Company && !l1Company) return { company: line2, position: line1, reason: 'company-suffix on 2nd line' };
+
+  return { company: line1, position: line2, reason: 'no signal, default company-then-position order' };
+}
+
+// Splits one line that holds both company and position, separated by a
+// dash/comma/pipe or a connector word ("at", "presso", "bei", ...), and
+// figures out which side is which the same way classifyHeaderPair does.
+// Falls back to the conventional "position, then company" order (matching
+// this module's original single-line behavior) when neither side has a
+// signal either way.
+function splitCombinedHeaderLine(line) {
+  var parts = line
+    .split(/\s+(?:at|@|presso|bei|chez|em|bij)\s+|\s*[-–—|,]\s*/i)
+    .map(function (s) { return s.trim(); })
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+
+  var a = parts[0];
+  var b = parts.slice(1).join(', ');
+  var aTitle = JOB_TITLE_HINT_RE.test(a);
+  var bTitle = JOB_TITLE_HINT_RE.test(b);
+  if (aTitle && !bTitle) return { position: a, company: b, reason: 'title word before separator' };
+  if (bTitle && !aTitle) return { position: b, company: a, reason: 'title word after separator' };
+
+  var aCompany = COMPANY_SUFFIX_RE.test(a);
+  var bCompany = COMPANY_SUFFIX_RE.test(b);
+  if (aCompany && !bCompany) return { company: a, position: b, reason: 'company-suffix before separator' };
+  if (bCompany && !aCompany) return { company: b, position: a, reason: 'company-suffix after separator' };
+
+  return { position: a, company: b, reason: 'no signal, default position-then-company order' };
+}
+
+// Turns the header lines collected for one job (1, 2, or occasionally more
+// — see extractWorkExperience) plus its date range (possibly none) into a
+// {company, position, startDate, endDate} entry.
+function buildWorkEntry(headerLines, dateInfo) {
+  var lines = headerLines.filter(Boolean);
+  var company = '';
+  var position = '';
+  var reason = 'no header text';
+
+  if (lines.length === 1) {
+    var split = splitCombinedHeaderLine(lines[0]);
+    if (split) {
+      company = split.company;
+      position = split.position;
+      reason = 'single combined line (' + split.reason + ')';
+    } else {
+      company = lines[0];
+      reason = 'single line with no separator, treated as company';
+    }
+  } else if (lines.length >= 2) {
+    var pair = classifyHeaderPair(lines[0], lines[lines.length - 1]);
+    company = pair.company;
+    position = pair.position;
+    if (lines.length > 2) {
+      var middle = lines.slice(1, lines.length - 1).join(', ');
+      company = company + (company ? ', ' : '') + middle;
+      reason = lines.length + ' header lines, extra line(s) folded into company (' + pair.reason + ')';
+    } else {
+      reason = 'two header lines (' + pair.reason + ')';
+    }
+  }
+
+  var strippedCompany = stripTrailingLocation(company);
+  if (strippedCompany !== company) reason += ', stripped trailing location from company';
+  company = strippedCompany.trim();
+  position = position.trim();
+
+  // Last line of defense against a wrapped bullet continuation that slipped
+  // through as header text (see looksLikeHeaderLine/looksLikeValidPosition)
+  // — a real company/position is never a lowercase-starting or
+  // period-ending sentence fragment. Blanked rather than dropped outright
+  // so the OTHER field (if valid) is still kept.
+  if (company && !looksLikeHeaderLine(company)) {
+    reason += ', rejected company "' + company + '" (looks like a bullet fragment)';
+    company = '';
+  }
+  if (position && !looksLikeValidPosition(position)) {
+    reason += ', rejected position "' + position + '" (looks like a bullet fragment)';
+    position = '';
+  }
+
+  var entry = {
+    company: company,
+    position: position,
+    startDate: (dateInfo && dateInfo.startDate) || '',
+    endDate: (dateInfo && dateInfo.endDate) || ''
+  };
+  logCv('  entry ->', entry, '(' + reason + ')');
+  return entry;
+}
+
+// Groups the experience section's lines into entries. Layouts vary a lot —
+// company/position on one line or two (in either order), dates inline or on
+// their own line, a wide-gap location tacked onto the company line — so
+// this walks the lines as a small state machine instead of expecting one
+// fixed shape:
+//  - a bullet line never starts an entry and is never scanned for a date;
+//    it just closes off whatever header lines were pending (an entry can
+//    have no date at all, e.g. if the CV never states one), and puts the
+//    parser into "inside a bullet" mode.
+//  - while inside a bullet, an unprefixed line is normally a wrapped
+//    continuation of that bullet's sentence (PDF text extraction produces
+//    one array entry per visual line, so a long bullet reads as several
+//    unprefixed lines in a row) — it's ignored, same as the bullet itself,
+//    unless it looks like a real header (see looksLikeHeaderLine), in which
+//    case it's the next job's company/position and bullet mode ends.
+//  - outside a bullet, a non-bullet line either contains a date range
+//    (closing the entry: text before the date on that line still counts as
+//    header text) or is plain header text accumulated for the entry
+//    currently being built.
 function extractWorkExperience(lines) {
   if (!lines || !lines.length) return [];
 
+  logCv('extractWorkExperience: experience section has', lines.length, 'line(s)');
+  lines.forEach(function (line, i) { logCv('  line', i, ':', JSON.stringify(line)); });
+
   var entries = [];
-  for (var i = 0; i < lines.length && entries.length < 5; i++) {
-    var line = lines[i];
-    var m = line.match(DATE_RANGE_RE);
-    if (!m) continue;
+  var pending = [];
+  var inBullet = false;
 
-    var before = line.slice(0, m.index).trim();
-    before = before.replace(/[-–—|,]+$/, '').trim();
-
-    var company = '';
-    var position = '';
-    var sep = before.split(/\s+(?:at|@|presso|bei|de)\s+|\s*[-–—|]\s*/i);
-    if (sep.length >= 2) {
-      position = sep[0].trim();
-      company = sep.slice(1).join(' ').trim();
-    } else {
-      company = before;
+  function flush(dateInfo) {
+    if (!pending.length && !dateInfo) return;
+    var entry = buildWorkEntry(pending, dateInfo);
+    pending = [];
+    if (!entry.company && !entry.position) {
+      logCv('  dropped: no company/position text found for this entry');
+      return;
     }
-
-    entries.push({
-      company: company,
-      position: position,
-      startDate: parseDateFragment(m[1]),
-      endDate: parseDateFragment(m[2])
-    });
+    entries.push(entry);
   }
 
+  for (var i = 0; i < lines.length && entries.length < 5; i++) {
+    var line = lines[i];
+
+    if (isBulletLine(line)) {
+      logCv('line', i, 'is a bullet/description line, skipping and closing any pending entry');
+      inBullet = true;
+      if (pending.length) flush(null);
+      continue;
+    }
+
+    var m = line.match(DATE_RANGE_RE);
+    if (m) {
+      inBullet = false;
+      var before = line.slice(0, m.index).trim().replace(/[-–—|,(]+$/, '').trim();
+      if (before) pending.push(before);
+
+      var startDate = parseDateToken(m[1]) || '';
+      var endDate = isOngoingToken(m[2]) ? '' : (parseDateToken(m[2]) || '');
+      logCv('line', i, 'matched date range', JSON.stringify(m[0]), '-> start:', JSON.stringify(startDate), 'end:', JSON.stringify(endDate));
+
+      flush({ startDate: startDate, endDate: endDate });
+      continue;
+    }
+
+    if (inBullet) {
+      if (looksLikeHeaderLine(line)) {
+        if (isAnySectionHeading(line)) {
+          logCv('line', i, 'looks like the start of a new section, stopping experience extraction:', JSON.stringify(line));
+          if (pending.length) flush(null);
+          break;
+        }
+        logCv('line', i, 'ends the bullet run (looks like a new header), treated as header text');
+        inBullet = false;
+        pending.push(line);
+      } else {
+        logCv('line', i, 'is a wrapped continuation of the previous bullet, skipping:', JSON.stringify(line));
+      }
+      continue;
+    }
+
+    if (isAnySectionHeading(line)) {
+      logCv('line', i, 'looks like the start of a new section, stopping experience extraction:', JSON.stringify(line));
+      if (pending.length) flush(null);
+      break;
+    }
+
+    logCv('line', i, 'treated as header text (company/position/location)');
+    pending.push(line);
+  }
+
+  if (pending.length) flush(null);
+
+  logCv('extractWorkExperience: extracted', entries.length, 'entrie(s)');
   return entries;
 }
 
@@ -621,7 +1169,7 @@ function parseInlineLanguagesContent(content) {
 // "Languages:" with nothing after it — that's left for the normal
 // section-heading path to handle).
 function matchInlineLabelContent(line, labelWords) {
-  var lowerLine = line.toLowerCase();
+  var lowerLine = turkishSafeLower(line);
   for (var i = 0; i < labelWords.length; i++) {
     var re = new RegExp('^' + escapeRegExp(labelWords[i]) + '\\s*[:\\-–]\\s*');
     var m = lowerLine.match(re);
@@ -692,7 +1240,7 @@ function extractProfileByPattern(text) {
   var lines = text.split('\n').map(function (l) { return l.trim(); }).filter(Boolean);
 
   var emailMatch = text.match(EMAIL_RE);
-  var phoneMatch = text.match(PHONE_RE);
+  var phone = findPhone(text);
   var name = extractName(lines);
 
   var inline = extractInlineLabeledContent(lines);
@@ -709,7 +1257,7 @@ function extractProfileByPattern(text) {
       firstName: (name && name.firstName) || '',
       lastName: (name && name.lastName) || '',
       email: emailMatch ? emailMatch[0] : '',
-      phone: phoneMatch ? phoneMatch[0].trim() : '',
+      phone: phone,
       phoneCountryCode: '',
       addressLine: '',
       city: '',
