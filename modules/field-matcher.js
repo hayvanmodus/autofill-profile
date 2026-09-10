@@ -59,6 +59,35 @@
 
   var LANGUAGE_PROFICIENCY_LEVELS = ['Basic', 'Intermediate', 'Advanced', 'Fluent', 'Native'];
 
+  // Generic "website"-style phrases are ambiguous — a real-world Italian
+  // "Sito web dell'agenzia immobiliare" (a company's website, not the
+  // user's) fuzzy/exact-matched portfolio via bare "sito web". Rather than
+  // drop these phrases outright (which also stops a plain "Website" field
+  // from matching a real portfolio field — a regression caught in testing),
+  // they're kept as "weak" keywords: they still score normally, UNLESS the
+  // same field's text also contains a company/employer word, in which case
+  // they're skipped for that field. Specific phrases like "portfolio" or
+  // "personal website" are unambiguous and stay as regular (strong)
+  // keywords in KEYWORD_PACKS below — this list is only for the generic
+  // "website" family.
+  var WEAK_KEYWORD_PHRASES = {
+    portfolio: ['website', 'sito web', 'webseite', 'web sitesi']
+  };
+
+  var COMPANY_CONTEXT_WORDS = [
+    'company', 'employer', 'agency', 'business', 'organization', 'organisation',
+    'azienda', 'impresa', 'agenzia', 'datore di lavoro', 'societa',
+    'unternehmen', 'firma', 'arbeitgeber',
+    'sirket', 'isveren', 'firma adi'
+  ].map(normalize);
+
+  function hasCompanyContext(textNorm) {
+    for (var i = 0; i < COMPANY_CONTEXT_WORDS.length; i++) {
+      if (textNorm.indexOf(COMPANY_CONTEXT_WORDS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
   // ---- Multilingual keyword map -----------------------------------------
   // Language -> field id -> phrases in that language. To add a new
   // language, add ONE new top-level key here (e.g. `fr: { firstName: [...],
@@ -76,7 +105,7 @@
       city: ['city', 'town'],
       country: ['country', 'nation', 'country region'],
       linkedin: ['linkedin', 'linked in'],
-      portfolio: ['portfolio', 'personal website', 'personal site', 'website'],
+      portfolio: ['portfolio', 'personal website', 'personal site'],
       github: ['github', 'git hub'],
       educationSchool: ['school', 'university', 'college', 'institution', 'alma mater'],
       educationDegree: ['degree', 'qualification'],
@@ -101,7 +130,7 @@
       city: ['città', 'citta'],
       country: ['paese', 'nazione'],
       linkedin: ['linkedin'],
-      portfolio: ['portfolio', 'sito web', 'sito personale'],
+      portfolio: ['portfolio', 'sito web personale', 'sito personale'],
       github: ['github'],
       educationSchool: ['scuola', 'università', 'universita', 'istituto'],
       educationDegree: ['laurea', 'titolo di studio', 'diploma'],
@@ -126,7 +155,7 @@
       city: ['stadt', 'wohnort'],
       country: ['land'],
       linkedin: ['linkedin'],
-      portfolio: ['portfolio', 'webseite', 'persönliche webseite', 'personliche webseite'],
+      portfolio: ['portfolio', 'persönliche webseite', 'personliche webseite'],
       github: ['github'],
       educationSchool: ['schule', 'universität', 'universitat', 'hochschule'],
       educationDegree: ['abschluss', 'akademischer grad'],
@@ -151,7 +180,7 @@
       city: ['şehir', 'sehir'],
       country: ['ülke', 'ulke'],
       linkedin: ['linkedin'],
-      portfolio: ['portfolyo', 'kişisel web sitesi', 'kisisel web sitesi', 'web sitesi'],
+      portfolio: ['portfolyo', 'kişisel web sitesi', 'kisisel web sitesi'],
       github: ['github'],
       educationSchool: ['okul', 'üniversite', 'universite'],
       educationDegree: ['derece', 'diploma'],
@@ -169,6 +198,20 @@
     }
   };
 
+  // Options page accepts URLs without a scheme (e.g. "linkedin.com/in/ada")
+  // and normalizes on save — see options.js's own copy of this logic. This
+  // is a second, defensive pass at fill time: a value saved before that
+  // normalization existed, or edited directly in storage, still gets a
+  // scheme here. Real-world payoff: some ATS URL fields client-side-reject
+  // a value with no scheme, which silently "loses" the fill.
+  function normalizeUrlValue(value) {
+    if (!value) return value;
+    var v = String(value).trim();
+    if (!v) return v;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return v; // already has a scheme (http:, https:, mailto:, ...)
+    return 'https://' + v.replace(/^\/+/, '');
+  }
+
   // ---- Non-linguistic field metadata ------------------------------------
   // id -> { getValue(profile), longtext?, selectable? }
   var FIELD_META = {
@@ -185,26 +228,34 @@
     phone: { getValue: function (p) { return p.personal && p.personal.phone; } },
     city: { getValue: function (p) { return p.personal && p.personal.city; } },
     country: { selectable: true, getValue: function (p) { return p.personal && p.personal.country; } },
-    linkedin: { getValue: function (p) { return p.links && p.links.linkedin; } },
-    portfolio: { getValue: function (p) { return p.links && p.links.portfolio; } },
-    github: { getValue: function (p) { return p.links && p.links.github; } },
+    linkedin: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.linkedin); } },
+    portfolio: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.portfolio); } },
+    github: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.github); } },
     educationSchool: { getValue: function (p) { return p.education && p.education.school; } },
     educationDegree: { getValue: function (p) { return p.education && p.education.degree; } },
     educationField: { getValue: function (p) { return p.education && p.education.field; } },
     educationGradYear: { getValue: function (p) { return p.education && p.education.gradYear; } },
-    // NOTE: only the most recent (first) work entry is used for now.
-    // Matching repeated experience sections on a page is a good next step.
+    // When a page has several repeating experience sections, each def below
+    // is resolved once per occurrence (see `repeatableGroup` / resolveValue):
+    // the 1st workCompany field on the page gets workExperience[0], the 2nd
+    // gets workExperience[1], etc. Assumes sections repeat top-to-bottom in
+    // the same order the fields are declared per section, which holds for
+    // the generic repeating-fieldset markup these ATSes use.
     workCompany: {
-      getValue: function (p) { return p.workExperience && p.workExperience[0] && p.workExperience[0].company; }
+      repeatableGroup: 'workExperience',
+      getValue: function (p, idx) { var e = p.workExperience && p.workExperience[idx || 0]; return e && e.company; }
     },
     workPosition: {
-      getValue: function (p) { return p.workExperience && p.workExperience[0] && p.workExperience[0].position; }
+      repeatableGroup: 'workExperience',
+      getValue: function (p, idx) { var e = p.workExperience && p.workExperience[idx || 0]; return e && e.position; }
     },
     workStartDate: {
-      getValue: function (p) { return p.workExperience && p.workExperience[0] && p.workExperience[0].startDate; }
+      repeatableGroup: 'workExperience',
+      getValue: function (p, idx) { var e = p.workExperience && p.workExperience[idx || 0]; return e && e.startDate; }
     },
     workEndDate: {
-      getValue: function (p) { return p.workExperience && p.workExperience[0] && p.workExperience[0].endDate; }
+      repeatableGroup: 'workExperience',
+      getValue: function (p, idx) { var e = p.workExperience && p.workExperience[idx || 0]; return e && e.endDate; }
     },
     languages: {
       getValue: function (p) {
@@ -319,18 +370,22 @@
     return 1 + Math.min(tokenCount - 1, 3) * 0.15;
   }
 
-  // ---- Build FIELD_DEFS by pooling every language pack -------------------
+  // ---- Build defs by pooling every language pack -------------------------
+  // Shared by FIELD_DEFS (text/select inputs) and QUESTION_DEFS (radio /
+  // checkbox groups) — both are "an id -> per-language keyword phrases"
+  // pack matched against some normalized text, differing only in metadata.
 
-  function buildFieldDefs() {
-    var ids = Object.keys(FIELD_META);
+  function buildDefsFromPacks(packs, metaMap) {
+    var ids = Object.keys(metaMap);
     var defs = [];
 
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i];
       var weightByNorm = {};
+      var weakNorms = {};
 
-      for (var lang in KEYWORD_PACKS) {
-        var phrases = KEYWORD_PACKS[lang][id] || [];
+      for (var lang in packs) {
+        var phrases = packs[lang][id] || [];
         for (var p = 0; p < phrases.length; p++) {
           var norm = normalize(phrases[p]);
           if (!norm) continue;
@@ -339,22 +394,34 @@
         }
       }
 
+      var weakPhrases = WEAK_KEYWORD_PHRASES[id] || [];
+      for (var wp = 0; wp < weakPhrases.length; wp++) {
+        var weakNorm = normalize(weakPhrases[wp]);
+        // A strong (unambiguous) phrase always wins if it happens to
+        // normalize to the same text as a weak one — never downgrade it.
+        if (!weakNorm || weightByNorm.hasOwnProperty(weakNorm)) continue;
+        weightByNorm[weakNorm] = specificity(tokenize(weakNorm).length);
+        weakNorms[weakNorm] = true;
+      }
+
       var normKeywords = Object.keys(weightByNorm).map(function (norm) {
         return {
           norm: norm,
           tokens: tokenize(norm),
           re: new RegExp('\\b' + escapeRegExp(norm) + '\\b'),
-          weight: weightByNorm[norm]
+          weight: weightByNorm[norm],
+          weak: !!weakNorms[norm]
         };
       });
 
-      var meta = FIELD_META[id];
+      var meta = metaMap[id];
       defs.push({
         id: id,
         normKeywords: normKeywords,
-        description: (KEYWORD_PACKS.en[id] || []).join(' / ') || id,
+        description: (packs.en[id] || []).join(' / ') || id,
         longtext: !!meta.longtext,
         selectable: !!meta.selectable,
+        repeatableGroup: meta.repeatableGroup || null,
         getValue: meta.getValue
       });
     }
@@ -362,7 +429,7 @@
     return defs;
   }
 
-  var FIELD_DEFS = buildFieldDefs();
+  var FIELD_DEFS = buildDefsFromPacks(KEYWORD_PACKS, FIELD_META);
 
   function getFieldDefById(id) {
     for (var i = 0; i < FIELD_DEFS.length; i++) {
@@ -371,15 +438,144 @@
     return null;
   }
 
+  // ---- Standard yes/no application questions (radio / checkbox groups) --
+  // Same pooling approach as KEYWORD_PACKS/FIELD_META above, but matched
+  // against a *group's* label (fieldset legend, aria-labelledby, etc.)
+  // instead of a single field's signals — see getGroupLabelText().
+  var QUESTION_KEYWORD_PACKS = {
+    en: {
+      workAuthorization: ['authorized to work', 'legally authorized to work', 'eligible to work', 'work authorization', 'authorised to work'],
+      visaSponsorship: ['require sponsorship', 'require visa sponsorship', 'need sponsorship', 'visa sponsorship', 'sponsorship to work', 'sponsorship for employment'],
+      workedHereBefore: ['worked here before', 'previously worked for this company', 'previously employed', 'former employee', 'worked for us before', 'previously worked for us']
+    },
+    it: {
+      workAuthorization: ['autorizzato a lavorare', 'permesso di lavoro', 'autorizzazione al lavoro'],
+      visaSponsorship: ['sponsorizzazione del visto', 'necessiti di uno sponsor per il visto', 'permesso di soggiorno per lavoro'],
+      workedHereBefore: ['hai già lavorato qui', 'hai gia lavorato qui', 'lavorato in precedenza per questa azienda', 'ex dipendente']
+    },
+    de: {
+      workAuthorization: ['arbeitserlaubnis', 'arbeitsberechtigung', 'berechtigt zu arbeiten'],
+      visaSponsorship: ['visum sponsoring', 'arbeitsvisum sponsoring', 'benötigen sie ein arbeitsvisum', 'benotigen sie ein arbeitsvisum'],
+      workedHereBefore: ['bereits hier gearbeitet', 'waren sie bereits bei uns beschäftigt', 'waren sie bereits bei uns beschaftigt', 'ehemaliger mitarbeiter']
+    },
+    tr: {
+      workAuthorization: ['çalışma izni', 'calisma izni', 'çalışmaya yetkili misiniz', 'calismaya yetkili misiniz'],
+      visaSponsorship: ['vize sponsorluğu', 'vize sponsorlugu', 'çalışma vizesi sponsorluğu', 'calisma vizesi sponsorlugu'],
+      workedHereBefore: ['daha önce burada çalıştınız mı', 'daha once burada calistiniz mi', 'bu şirkette daha önce çalıştınız mı', 'bu sirkette daha once calistiniz mi', 'eski çalışan', 'eski calisan']
+    }
+  };
+
+  var QUESTION_META = {
+    workAuthorization: { getValue: function (p) { return p.commonQuestions && p.commonQuestions.workAuthorization; } },
+    visaSponsorship: { getValue: function (p) { return p.commonQuestions && p.commonQuestions.visaSponsorship; } },
+    workedHereBefore: { getValue: function (p) { return p.commonQuestions && p.commonQuestions.workedHereBefore; } }
+  };
+
+  var QUESTION_DEFS = buildDefsFromPacks(QUESTION_KEYWORD_PACKS, QUESTION_META);
+
+  function getQuestionDefById(id) {
+    for (var i = 0; i < QUESTION_DEFS.length; i++) {
+      if (QUESTION_DEFS[i].id === id) return QUESTION_DEFS[i];
+    }
+    return null;
+  }
+
+  // Pooled yes/no option words across all supported languages, used to pick
+  // the right radio/checkbox once a group's question has been identified.
+  var YES_WORDS = ['yes', 'si', 'sì', 'ja', 'evet'].map(normalize);
+  var NO_WORDS = ['no', 'nein', 'hayır', 'hayir'].map(normalize);
+
+  // Real-world ATS wording for a single standalone checkbox is often
+  // negated ("I do NOT require visa sponsorship", "I am not authorized to
+  // work in the US") — the QUESTION_KEYWORD_PACKS phrases still substring-
+  // match these (e.g. "require sponsorship" appears inside "do not require
+  // sponsorship"), so without this the checkbox gets checked/unchecked
+  // backwards from the user's actual answer. See matchQuestionGroup's
+  // isSingleCheckbox branch.
+  //
+  // Checked against the RAW (unnormalized) label, not normalize()'s output:
+  // normalize's camelCase-splitting regex treats consecutive capitals as
+  // camelCase boundaries too, so all-caps "NOT" becomes "N OT" — silently
+  // breaking a token-based check on the normalized text.
+  var NEGATION_RE = /\b(not|non|nicht|kein|keine|değil|degil)\b/i;
+
+  function hasNegation(rawText) {
+    return NEGATION_RE.test(String(rawText || ''));
+  }
+
+  // Shared by matchQuestionGroup (radio/checkbox groups) and
+  // matchElementAsQuestion (a single select/text field) — both score
+  // `ctx` against QUESTION_DEFS the same way and need the same yes/no
+  // answer validation; they differ only in how they apply the result.
+  function pickBestQuestionAnswer(ctx, profile) {
+    var best = null;
+    var bestScore = 0;
+
+    for (var i = 0; i < QUESTION_DEFS.length; i++) {
+      var def = QUESTION_DEFS[i];
+      var score = scoreDef(ctx, def);
+      if (score > bestScore) {
+        bestScore = score;
+        best = def;
+      }
+    }
+
+    if (!best || bestScore < MIN_SCORE_THRESHOLD) return null;
+
+    var answer = best.getValue(profile);
+    if (answer !== 'yes' && answer !== 'no') return null;
+
+    return { def: best, answer: answer, score: bestScore };
+  }
+
+  // ---- Shadow DOM traversal ----------------------------------------------
+  // ATS platforms (Workday, Greenhouse, Lever, ...) commonly render form
+  // fields inside open shadow roots. Every collection/lookup below needs to
+  // see into those trees, and label lookups need to search *within the
+  // right tree* (a label in one shadow root can't reach an input in
+  // another via plain document.querySelector).
+
+  function getOwnerRoot(el) {
+    return (el.getRootNode && el.getRootNode()) || document;
+  }
+
+  // Depth-first walk of `root` plus every open shadow root reachable from
+  // it. Returns an array of root nodes (Document/ShadowRoot), each usable
+  // directly with querySelectorAll/getElementById.
+  function collectRoots(root, acc) {
+    acc.push(root);
+    var all = root.querySelectorAll('*');
+    for (var i = 0; i < all.length; i++) {
+      var node = all[i];
+      if (node.shadowRoot) collectRoots(node.shadowRoot, acc);
+    }
+    return acc;
+  }
+
+  function collectAllRoots(root) {
+    return collectRoots(root || document, []);
+  }
+
+  function deepQueryAll(root, selector) {
+    var roots = collectAllRoots(root);
+    var out = [];
+    for (var i = 0; i < roots.length; i++) {
+      var found = roots[i].querySelectorAll(selector);
+      for (var j = 0; j < found.length; j++) out.push(found[j]);
+    }
+    return out;
+  }
+
   // ---- DOM inspection ---------------------------------------------------
 
   function getLabelText(el) {
     var text = '';
+    var ownerRoot = getOwnerRoot(el);
 
     if (el.id) {
       try {
         var selector = 'label[for="' + (window.CSS && CSS.escape ? CSS.escape(el.id) : el.id) + '"]';
-        var byFor = document.querySelector(selector);
+        var byFor = ownerRoot.querySelector(selector);
         if (byFor) text = byFor.textContent;
       } catch (e) { /* invalid selector, ignore */ }
     }
@@ -387,7 +583,7 @@
     var ariaLabelledBy = el.getAttribute('aria-labelledby');
     if (!text && ariaLabelledBy) {
       var parts = ariaLabelledBy.split(/\s+/).map(function (id) {
-        var node = document.getElementById(id);
+        var node = ownerRoot.getElementById ? ownerRoot.getElementById(id) : document.getElementById(id);
         return node ? node.textContent : '';
       });
       text = parts.join(' ').trim();
@@ -438,8 +634,8 @@
     return { raw: raw, text: bestSignalText(raw) };
   }
 
-  function buildContext(el) {
-    var raw = getRawSignals(el);
+  function buildContext(el, raw) {
+    raw = raw || getRawSignals(el);
     return {
       label: normalize(raw.label),
       placeholder: normalize(raw.placeholder),
@@ -470,14 +666,144 @@
   }
 
   function collectFillableElements(root) {
-    root = root || document;
-    var nodes = root.querySelectorAll('input, textarea, select');
+    var nodes = deepQueryAll(root, 'input, textarea, select');
     var out = [];
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       if (isFillable(el) && isVisible(el)) out.push(el);
     }
     return out;
+  }
+
+  // ---- Radio / checkbox groups (standard yes/no questions) ---------------
+
+  // The question text for a whole radio/checkbox group — a fieldset legend,
+  // an aria-labelledby/aria-label on a role="group"/"radiogroup" wrapper —
+  // as opposed to getLabelText(), which resolves one specific option.
+  function getGroupLabelText(el) {
+    var ownerRoot = getOwnerRoot(el);
+
+    var fieldset = el.closest('fieldset');
+    if (fieldset) {
+      var legend = fieldset.querySelector('legend');
+      if (legend && legend.textContent.trim()) return legend.textContent.trim();
+    }
+
+    var groupContainer = el.closest('[role="radiogroup"], [role="group"]');
+    if (groupContainer) {
+      var ariaLabel = groupContainer.getAttribute('aria-label');
+      if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+
+      var labelledBy = groupContainer.getAttribute('aria-labelledby');
+      if (labelledBy) {
+        var parts = labelledBy.split(/\s+/).map(function (id) {
+          var node = ownerRoot.getElementById ? ownerRoot.getElementById(id) : document.getElementById(id);
+          return node ? node.textContent : '';
+        });
+        var text = parts.join(' ').trim();
+        if (text) return text;
+      }
+    }
+
+    return '';
+  }
+
+  // The label of one specific radio/checkbox option (e.g. "Yes"), as
+  // opposed to getGroupLabelText() above, which resolves the question.
+  function getOptionLabelText(el) {
+    var text = getLabelText(el);
+    if (!text) text = el.getAttribute('aria-label') || '';
+    if (!text) text = el.getAttribute('value') || '';
+    return text;
+  }
+
+  // Groups radio/checkbox inputs by shared `name` within the same owning
+  // form (or owner root, for fields with no <form> ancestor — common in
+  // shadow-DOM ATS widgets). A lone checkbox with a unique name is its own
+  // one-element "group".
+  function collectRadioGroups(root) {
+    var nodes = deepQueryAll(root, 'input[type="radio"], input[type="checkbox"]');
+    var groups = [];
+
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.disabled || !isVisible(el)) continue;
+
+      var name = el.getAttribute('name') || '';
+      var scope = el.form || getOwnerRoot(el);
+      var group = null;
+
+      if (name) {
+        for (var g = 0; g < groups.length; g++) {
+          if (groups[g].scope === scope && groups[g].name === name) {
+            group = groups[g];
+            break;
+          }
+        }
+      }
+
+      if (!group) {
+        group = { scope: scope, name: name, elements: [] };
+        groups.push(group);
+      }
+      group.elements.push(el);
+    }
+
+    return groups;
+  }
+
+  function matchQuestionGroup(group, profile) {
+    // A lone checkbox (no radio siblings) is often its own full question —
+    // e.g. a single "I require visa sponsorship to work in this country"
+    // checkbox with no fieldset — rather than a yes/no pair with a legend.
+    var isSingleCheckbox = group.elements.length === 1 &&
+      (group.elements[0].getAttribute('type') || '').toLowerCase() === 'checkbox';
+
+    var labelText = getGroupLabelText(group.elements[0]);
+    if (!labelText && isSingleCheckbox) {
+      labelText = getOptionLabelText(group.elements[0]);
+    }
+    if (!labelText) return null;
+
+    var ctx = { label: normalize(labelText) };
+    var picked = pickBestQuestionAnswer(ctx, profile);
+    if (!picked) return null;
+
+    if (isSingleCheckbox) {
+      // The checkbox's own label IS the statement being agreed to. If it's
+      // phrased in the negative ("I do NOT require sponsorship"), checking
+      // it means the opposite of the profile's stored yes/no answer.
+      var negated = hasNegation(labelText);
+      var checked = negated ? picked.answer === 'no' : picked.answer === 'yes';
+      return {
+        def: picked.def, target: group.elements[0], elements: group.elements,
+        labelText: labelText, checkedState: checked
+      };
+    }
+
+    var words = picked.answer === 'yes' ? YES_WORDS : NO_WORDS;
+    var target = null;
+    for (var j = 0; j < group.elements.length; j++) {
+      var optionTokens = tokenize(normalize(getOptionLabelText(group.elements[j])));
+      if (optionTokens.some(function (t) { return words.indexOf(t) !== -1; })) {
+        target = group.elements[j];
+        break;
+      }
+    }
+    if (!target) return null;
+
+    return { def: picked.def, target: target, elements: group.elements, labelText: labelText, checkedState: true };
+  }
+
+  function applyRadioGroupValue(match) {
+    var el = match.target;
+    if (el.tagName !== 'INPUT') return false;
+    var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'checked').set;
+    setter.call(el, match.checkedState);
+    el.dispatchEvent(new Event('click', { bubbles: true }));
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
   }
 
   // ---- Scoring -----------------------------------------------------------
@@ -491,6 +817,7 @@
       var bestContribution = 0;
       for (var k = 0; k < def.normKeywords.length; k++) {
         var kw = def.normKeywords[k];
+        if (kw.weak && hasCompanyContext(text)) continue;
         var m = phraseMatchScore(kw, text);
         if (!m) continue;
         var multiplier = m.exact ? EXACT_MATCH_BONUS : FUZZY_MATCH_DAMPENING;
@@ -518,6 +845,93 @@
     return null;
   }
 
+  // Real-world false positive: "I am legally authorized to work in the
+  // country I am applying in" matched `country` purely because the word
+  // "country" appears in the sentence. A full sentence/question is never
+  // actually a short single-value field like a name or place — it's almost
+  // always a yes/no application question — so these ids are excluded from
+  // normal scoring once a field's label looks sentence-shaped, and the
+  // field is instead tried against QUESTION_DEFS (see
+  // matchElementAsQuestion below).
+  var SENTENCE_UNSAFE_IDS = ['firstName', 'lastName', 'fullName', 'city', 'country'];
+
+  var QUESTION_MARK_RE = /[?？]\s*$/;
+  var QUESTION_LEAD_RE = /^(are|do|does|did|is|was|were|will|would|can|could|have|has|had)\s+(you|i)\b/i;
+  var SENTENCE_MIN_WORDS = 7; // "longer than about six words"
+
+  function looksLikeQuestionText(rawText) {
+    if (!rawText) return false;
+    var trimmed = String(rawText).trim();
+    if (!trimmed) return false;
+    if (QUESTION_MARK_RE.test(trimmed)) return true;
+    if (QUESTION_LEAD_RE.test(trimmed)) return true;
+    var wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+    return wordCount >= SENTENCE_MIN_WORDS;
+  }
+
+  // On a <select>, find the option whose own text is actually a localized
+  // yes/no word (e.g. "Sì" / "Ja" / "Evet"), rather than assuming the
+  // English word "Yes"/"No" is present — a select on a non-English page
+  // legitimately never has that.
+  function findLocalizedSelectOption(el, answer) {
+    var words = answer === 'yes' ? YES_WORDS : NO_WORDS;
+    for (var i = 0; i < el.options.length; i++) {
+      var opt = el.options[i];
+      var tokens = tokenize(normalize(opt.textContent));
+      if (tokens.some(function (t) { return words.indexOf(t) !== -1; })) return opt.textContent;
+    }
+    return null;
+  }
+
+  // Tries a single element (a <select>, or occasionally a text input) as a
+  // standard yes/no question, the same way matchQuestionGroup() tries a
+  // radio/checkbox group — some ATSes render these as a Yes/No dropdown
+  // instead of radio buttons.
+  function matchElementAsQuestion(el, ctx, profile) {
+    var picked = pickBestQuestionAnswer(ctx, profile);
+    if (!picked) return null;
+
+    var value = picked.answer.charAt(0).toUpperCase() + picked.answer.slice(1);
+    if (el.tagName === 'SELECT') {
+      var localized = findLocalizedSelectOption(el, picked.answer);
+      if (localized) value = localized;
+    }
+
+    return { el: el, def: picked.def, value: value, score: picked.score };
+  }
+
+  // Occurrence counters live on a per-fill-run object the caller creates
+  // once (see content.js) and threads through every resolveValue call, so
+  // the Nth workCompany field *resolved* on the page gets
+  // workExperience[N-1] — see FIELD_META's repeatableGroup fields. Callers
+  // MUST resolve values for repeatable defs in DOM order across the whole
+  // page (Tier 1 and Tier 2 combined) — resolving them in whatever order
+  // matches happen to be found/confirmed in (e.g. Tier 1 first, then
+  // Tier 2 filling in gaps afterwards) would hand a later DOM section's
+  // fields to an earlier occurrence index than an earlier section that
+  // took longer to resolve. See content.js's runFill for the single
+  // DOM-ordered resolution pass this requires.
+  function nextOccurrenceIndex(runCtx, id) {
+    runCtx.counters = runCtx.counters || {};
+    var idx = runCtx.counters[id] || 0;
+    runCtx.counters[id] = idx + 1;
+    return idx;
+  }
+
+  function resolveValue(def, profile, runCtx) {
+    if (!def) return null;
+    if (def.repeatableGroup) return def.getValue(profile, nextOccurrenceIndex(runCtx || {}, def.id));
+    return def.getValue(profile);
+  }
+
+  // Picks the best matching def for `el`, or null. Deliberately does NOT
+  // resolve/apply a value: for a repeatableGroup def (see resolveValue
+  // above), the right occurrence index can only be known once every
+  // element on the page — Tier 1 and Tier 2 combined — has been matched
+  // and walked in DOM order, which is the caller's job (content.js).
+  // matchElementAsQuestion is the one exception: QUESTION_DEFS are never
+  // repeatable, so it resolves its own (possibly localized-select) value
+  // immediately and returns it via `.value`.
   function matchElement(el, profile) {
     if (!isFillable(el) || !isVisible(el)) return null;
 
@@ -528,10 +942,7 @@
     // against other fields (which is exactly how "dell'annuncio" ended up
     // guessed as a phone number).
     if (kind === 'email' || kind === 'tel') {
-      var forcedDef = getFieldDefById(kind === 'email' ? 'email' : 'phone');
-      var forcedValue = forcedDef.getValue(profile);
-      if (!forcedValue) return null;
-      return { el: el, def: forcedDef, value: forcedValue, score: TYPE_MATCH_SCORE };
+      return { el: el, def: getFieldDefById(kind === 'email' ? 'email' : 'phone'), score: TYPE_MATCH_SCORE };
     }
 
     // type="url" can only resolve to one of the link-shaped profile
@@ -541,7 +952,13 @@
       candidateDefs = FIELD_DEFS.filter(function (d) { return URL_KIND_IDS.indexOf(d.id) !== -1; });
     }
 
-    var ctx = buildContext(el);
+    var raw = getRawSignals(el);
+    var isQuestionLike = !kind && looksLikeQuestionText(raw.label || raw.aria || '');
+    if (isQuestionLike) {
+      candidateDefs = candidateDefs.filter(function (d) { return SENTENCE_UNSAFE_IDS.indexOf(d.id) === -1; });
+    }
+
+    var ctx = buildContext(el, raw);
     var best = null;
     var bestScore = 0;
 
@@ -554,19 +971,31 @@
       }
     }
 
-    if (!best || bestScore < MIN_SCORE_THRESHOLD) return null;
+    if (!best || bestScore < MIN_SCORE_THRESHOLD) {
+      return isQuestionLike ? matchElementAsQuestion(el, ctx, profile) : null;
+    }
 
-    var value = best.getValue(profile);
+    return { el: el, def: best, score: bestScore };
+  }
+
+  // Resolves a matchElement() pick to its final value: `.value` is used as-
+  // is when already resolved (matchElementAsQuestion's result), otherwise
+  // resolveValue() is called against the *shared* runCtx passed in — see
+  // nextOccurrenceIndex's docs on why every def on a page must be resolved
+  // through one shared runCtx, walked in DOM order.
+  function finalizePick(picked, profile, runCtx) {
+    if (!picked) return null;
+    var value = picked.value !== undefined ? picked.value : resolveValue(picked.def, profile, runCtx);
     if (value === null || value === undefined || value === '') return null;
-
-    return { el: el, def: best, value: value, score: bestScore };
+    return { el: picked.el, def: picked.def, value: value, score: picked.score };
   }
 
   function matchForm(root, profile) {
     var elements = collectFillableElements(root);
+    var runCtx = {};
     var matches = [];
     for (var i = 0; i < elements.length; i++) {
-      var m = matchElement(elements[i], profile);
+      var m = finalizePick(matchElement(elements[i], profile), profile, runCtx);
       if (m) matches.push(m);
     }
     return matches;
@@ -631,15 +1060,24 @@
 
   window.LCFieldMatcher = {
     FIELD_DEFS: FIELD_DEFS,
+    QUESTION_DEFS: QUESTION_DEFS,
     LANGUAGE_PROFICIENCY_LEVELS: LANGUAGE_PROFICIENCY_LEVELS,
     SUPPORTED_LANGUAGES: Object.keys(KEYWORD_PACKS),
     normalize: normalize,
+    collectAllRoots: collectAllRoots,
     collectFillableElements: collectFillableElements,
+    collectRadioGroups: collectRadioGroups,
     getFieldSignals: getFieldSignals,
+    getGroupLabelText: getGroupLabelText,
     getFieldDefById: getFieldDefById,
+    getQuestionDefById: getQuestionDefById,
     matchElement: matchElement,
     matchForm: matchForm,
+    matchQuestionGroup: matchQuestionGroup,
+    finalizePick: finalizePick,
+    resolveValue: resolveValue,
     hasFillableForm: hasFillableForm,
-    applyValue: applyValue
+    applyValue: applyValue,
+    applyRadioGroupValue: applyRadioGroupValue
   };
 })();

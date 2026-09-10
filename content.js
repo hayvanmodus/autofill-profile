@@ -164,6 +164,42 @@
   }
 
   // ---- Fill orchestration: Tier 1 (local) then Tier 2 (LLM fallback) ----
+  //
+  // Matching happens in two phases so repeating work-experience sections
+  // stay in DOM order even when Tier 2 recovers a field Tier 1 missed:
+  // phase 1 picks a candidate def for every element (Tier 1, then Tier 2
+  // filling in remaining gaps) WITHOUT resolving values; phase 2 walks all
+  // elements once, in DOM order, resolving values through one shared
+  // occurrence counter (matcher.finalizePick). Resolving values as each
+  // tier finished (the old approach) let a later section's field "steal"
+  // an earlier occurrence index if an earlier section's field needed Tier 2
+  // to be recognized at all. See matchElement/resolveValue in
+  // modules/field-matcher.js for the underlying contract.
+
+  function finalizeAndFill(allEls, picks, pickTiers, profile, matcher) {
+    var runCtx = {};
+    var debugEntries = [];
+    var filledCount = 0;
+
+    allEls.forEach(function (el, i) {
+      var signalText = matcher.getFieldSignals(el).text;
+      var final = matcher.finalizePick(picks[i], profile, runCtx);
+
+      if (!final) {
+        debugEntries.push({ text: signalText, tier: 'unmatched', fieldId: null });
+        return;
+      }
+
+      var ok = matcher.applyValue(final.el, final.value);
+      if (ok) {
+        filledCount++;
+        highlightElement(final.el);
+      }
+      debugEntries.push({ text: signalText, tier: pickTiers[i], fieldId: final.def.id });
+    });
+
+    return { debugEntries: debugEntries, filledCount: filledCount };
+  }
 
   function runFill() {
     chrome.storage.local.get(['profile'], function (result) {
@@ -180,35 +216,38 @@
       var matcher = window.LCFieldMatcher;
       var allEls = matcher.collectFillableElements(document);
 
-      var debugEntries = [];
-      var filledCount = 0;
-      var matchedEls = new Set();
-
-      allEls.forEach(function (el) {
-        var m = matcher.matchElement(el, profile);
+      var radioFilledCount = 0;
+      var radioDebugEntries = [];
+      matcher.collectRadioGroups(document).forEach(function (group) {
+        var m = matcher.matchQuestionGroup(group, profile);
         if (!m) return;
-        matchedEls.add(el);
-        var ok = matcher.applyValue(el, m.value);
+        var ok = matcher.applyRadioGroupValue(m);
         if (ok) {
-          filledCount++;
-          highlightElement(el);
+          radioFilledCount++;
+          highlightElement(m.target);
         }
-        debugEntries.push({ text: matcher.getFieldSignals(el).text, tier: 'tier1', fieldId: m.def.id });
+        radioDebugEntries.push({ text: m.labelText, tier: 'tier1', fieldId: m.def.id });
       });
 
-      var unmatchedEls = allEls.filter(function (el) { return !matchedEls.has(el); });
-      var candidates = unmatchedEls
-        .map(function (el) { return { el: el, text: matcher.getFieldSignals(el).text }; })
-        .filter(function (c) { return c.text; });
+      // Phase 1: pick (not resolve) a candidate def per element, DOM order.
+      var picks = allEls.map(function (el) { return matcher.matchElement(el, profile); });
+      var pickTiers = picks.map(function () { return 'tier1'; });
 
-      unmatchedEls
-        .filter(function (el) { return !matcher.getFieldSignals(el).text; })
-        .forEach(function () {
-          debugEntries.push({ text: '', tier: 'unmatched', fieldId: null });
-        });
+      var candidates = [];
+      allEls.forEach(function (el, i) {
+        if (picks[i]) return;
+        var text = matcher.getFieldSignals(el).text;
+        if (text) candidates.push({ idx: i, el: el, text: text });
+      });
+
+      function finish(note) {
+        var result = finalizeAndFill(allEls, picks, pickTiers, profile, matcher);
+        var debugEntries = radioDebugEntries.concat(result.debugEntries);
+        finishFill(radioFilledCount + result.filledCount, debugEntries, note);
+      }
 
       if (candidates.length === 0) {
-        finishFill(filledCount, debugEntries, null);
+        finish(null);
         return;
       }
 
@@ -226,31 +265,18 @@
           candidates.forEach(function (c, i) {
             var fieldId = response.mapping[String(i)];
             var def = fieldId ? matcher.getFieldDefById(fieldId) : null;
-            var value = def ? def.getValue(profile) : null;
-
-            if (def && value) {
-              var ok = matcher.applyValue(c.el, value);
-              if (ok) {
-                filledCount++;
-                highlightElement(c.el);
-              }
-              debugEntries.push({ text: c.text, tier: 'tier2', fieldId: fieldId });
-            } else {
-              debugEntries.push({ text: c.text, tier: 'unmatched', fieldId: null });
+            if (def) {
+              picks[c.idx] = { el: c.el, def: def, score: 0 };
+              pickTiers[c.idx] = 'tier2';
             }
           });
-        } else {
-          if (response && response.reason === 'error') {
-            note = 'Tier 2 (AI) request failed: ' + (response.message || 'unknown error');
-          } else if (response && response.reason === 'no-api-key') {
-            note = 'Tier 2 (AI) skipped — no Anthropic API key set in options.';
-          }
-          candidates.forEach(function (c) {
-            debugEntries.push({ text: c.text, tier: 'unmatched', fieldId: null });
-          });
+        } else if (response && response.reason === 'error') {
+          note = 'Tier 2 (AI) request failed: ' + (response.message || 'unknown error');
+        } else if (response && response.reason === 'no-api-key') {
+          note = 'Tier 2 (AI) skipped — no Anthropic API key set in options.';
         }
 
-        finishFill(filledCount, debugEntries, note);
+        finish(note);
       });
     });
   }
@@ -262,7 +288,57 @@
       : 'No matching fields found on this page.');
   }
 
-  // ---- Detection ----------------------------------------------------------
+  // ---- Detection ------------------------------------------------------------
+  // Dynamic forms (fields revealed by "Next" / expanding a section, or ATS
+  // widgets rendering more of their shadow tree) need re-scanning after the
+  // page changes, not just once at load. A single MutationObserver on the
+  // light DOM won't see mutations happening inside a shadow root someone
+  // else attached — those are separate trees — so every open shadow root we
+  // discover gets its own observer too, re-discovered on every scan so
+  // newly-created shadow roots get picked up as soon as something in the
+  // light DOM around them changes.
+
+  var observedRoots = new WeakSet();
+
+  function observeRoot(root) {
+    if (observedRoots.has(root)) return;
+    // Never observe our own floating-widget shadow root — its toast/debug
+    // panel innerHTML updates would otherwise trigger pointless rescans.
+    if (root.host && root.host.id === HOST_ID) return;
+    observedRoots.add(root);
+    var target = (root.nodeType === 9) ? root.documentElement : root; // 9 = Document
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
+  // Full collectAllRoots() walk (querySelectorAll('*') at every level) is
+  // only cheap to do occasionally — run it at startup/load, not on every
+  // mutation. Ongoing discovery of *new* shadow roots instead happens
+  // incrementally below, scoped to just the nodes each mutation added.
+  function attachObservers() {
+    window.LCFieldMatcher.collectAllRoots(document).forEach(observeRoot);
+  }
+
+  function discoverShadowRootsIn(node) {
+    if (!node || node.nodeType !== 1 || !node.querySelectorAll) return; // element nodes only
+    if (node.shadowRoot) observeRoot(node.shadowRoot);
+    var descendants = node.querySelectorAll('*');
+    for (var i = 0; i < descendants.length; i++) {
+      if (descendants[i].shadowRoot) observeRoot(descendants[i].shadowRoot);
+    }
+  }
+
+  var observer = new MutationObserver(function (mutations) {
+    var relevant = false;
+    for (var i = 0; i < mutations.length; i++) {
+      var mutation = mutations[i];
+      if (mutation.target && mutation.target.id === HOST_ID) continue;
+      relevant = true;
+      for (var j = 0; j < mutation.addedNodes.length; j++) {
+        discoverShadowRootsIn(mutation.addedNodes[j]);
+      }
+    }
+    if (relevant) scheduleScan();
+  });
 
   function scanForForm() {
     var found = window.LCFieldMatcher.hasFillableForm(document);
@@ -278,16 +354,10 @@
     scanTimer = setTimeout(scanForForm, 500);
   }
 
+  attachObservers();
   scanForForm();
-  window.addEventListener('load', scanForForm);
-
-  var observer = new MutationObserver(function (mutations) {
-    for (var i = 0; i < mutations.length; i++) {
-      var target = mutations[i].target;
-      if (target && target.id === HOST_ID) continue;
-      scheduleScan();
-      return;
-    }
+  window.addEventListener('load', function () {
+    attachObservers();
+    scanForForm();
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
 })();

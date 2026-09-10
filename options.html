@@ -27,10 +27,13 @@
 
     <section>
       <h2>Links</h2>
+      <p class="section-hint">
+        The https:// prefix is optional — "linkedin.com/in/name" works fine and gets normalized when you save.
+      </p>
       <div class="field-grid">
-        <label>LinkedIn URL<input type="url" id="linkedin" placeholder="https://linkedin.com/in/…" autocomplete="off"></label>
-        <label>Portfolio URL<input type="url" id="portfolio" placeholder="https://…" autocomplete="off"></label>
-        <label>GitHub URL<input type="url" id="github" placeholder="https://github.com/…" autocomplete="off"></label>
+        <label>LinkedIn URL<input type="text" id="linkedin" placeholder="linkedin.com/in/…" autocomplete="off"></label>
+        <label>Portfolio URL<input type="text" id="portfolio" placeholder="yoursite.com" autocomplete="off"></label>
+        <label>GitHub URL<input type="text" id="github" placeholder="github.com/…" autocomplete="off"></label>
       </div>
     </section>
 
@@ -75,6 +78,38 @@
       <label>Strengths
         <textarea id="strengths" placeholder="Your key strengths, in your own words."></textarea>
       </label>
+    </section>
+
+    <section>
+      <h2>Common application questions</h2>
+      <p class="section-hint">
+        Job applications repeatedly ask the same yes/no questions. Set your standard answers once
+        and the extension will select the matching radio button or checkbox when it recognizes
+        the question.
+      </p>
+      <div class="field-grid">
+        <label>Authorized to work in your country?
+          <select id="qWorkAuthorization">
+            <option value="">— No answer set —</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+        <label>Require visa sponsorship?
+          <select id="qVisaSponsorship">
+            <option value="">— No answer set —</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+        <label>Worked here before?
+          <select id="qWorkedHereBefore">
+            <option value="">— No answer set —</option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+      </div>
     </section>
 
     <section>

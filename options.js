@@ -26,6 +26,9 @@
     languagesListEl: document.getElementById('languagesList'),
     addLanguageBtn: document.getElementById('addLanguageBtn'),
     skills: document.getElementById('skills'),
+    qWorkAuthorization: document.getElementById('qWorkAuthorization'),
+    qVisaSponsorship: document.getElementById('qVisaSponsorship'),
+    qWorkedHereBefore: document.getElementById('qWorkedHereBefore'),
     aboutMe: document.getElementById('aboutMe'),
     whyThisRole: document.getElementById('whyThisRole'),
     strengths: document.getElementById('strengths'),
@@ -44,6 +47,17 @@
     var div = document.createElement('div');
     div.textContent = str == null ? '' : String(str);
     return div.innerHTML;
+  }
+
+  // Accepts "linkedin.com/in/name" or a bare username-style value as well
+  // as a full URL, and normalizes to an absolute URL on save so the field
+  // both displays cleanly and isn't rejected by a target ATS page's own
+  // "must be a valid URL" client-side validation.
+  function normalizeUrl(value) {
+    var v = (value || '').trim();
+    if (!v) return '';
+    if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return v;
+    return 'https://' + v.replace(/^\/+/, '');
   }
 
   function blankWork() {
@@ -174,6 +188,11 @@
 
     el.skills.value = (profile.skills || []).join(', ');
 
+    var commonQuestions = profile.commonQuestions || {};
+    el.qWorkAuthorization.value = commonQuestions.workAuthorization || '';
+    el.qVisaSponsorship.value = commonQuestions.visaSponsorship || '';
+    el.qWorkedHereBefore.value = commonQuestions.workedHereBefore || '';
+
     var essays = profile.essays || {};
     el.aboutMe.value = essays.aboutMe || '';
     el.whyThisRole.value = essays.whyThisRole || '';
@@ -202,9 +221,9 @@
         country: el.country.value.trim()
       },
       links: {
-        linkedin: el.linkedin.value.trim(),
-        portfolio: el.portfolio.value.trim(),
-        github: el.github.value.trim()
+        linkedin: normalizeUrl(el.linkedin.value),
+        portfolio: normalizeUrl(el.portfolio.value),
+        github: normalizeUrl(el.github.value)
       },
       education: {
         school: el.eduSchool.value.trim(),
@@ -219,6 +238,11 @@
         return row.language;
       }),
       skills: el.skills.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean),
+      commonQuestions: {
+        workAuthorization: el.qWorkAuthorization.value,
+        visaSponsorship: el.qVisaSponsorship.value,
+        workedHereBefore: el.qWorkedHereBefore.value
+      },
       essays: {
         aboutMe: el.aboutMe.value.trim(),
         whyThisRole: el.whyThisRole.value.trim(),
@@ -232,6 +256,9 @@
     var profile = collectProfile();
     var settings = collectSettings();
     chrome.storage.local.set({ profile: profile, settings: settings }, function () {
+      el.linkedin.value = profile.links.linkedin;
+      el.portfolio.value = profile.links.portfolio;
+      el.github.value = profile.links.github;
       el.savedMsg.classList.add('show');
       setTimeout(function () {
         el.savedMsg.classList.remove('show');
