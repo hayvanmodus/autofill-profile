@@ -3,13 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <title>AutoFill Profile — Settings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <header>
     <h1>AutoFill Profile</h1>
-    <p class="subtitle">Fill this in once. It's stored only on this device — nothing is sent anywhere.</p>
+    <p class="subtitle">Set this up once. Every form after that is one click.</p>
+    <p class="subtitle-sub">Stored on your device only.</p>
   </header>
+
+  <p class="page-hint">Fill in only what you need.</p>
 
   <form id="profileForm">
 
@@ -31,9 +37,7 @@
 
     <section>
       <h2>Links</h2>
-      <p class="section-hint">
-        The https:// prefix is optional — "linkedin.com/in/name" works fine and gets normalized when you save.
-      </p>
+      <p class="section-hint">The https:// prefix is optional. We add it for you.</p>
       <div class="field-grid">
         <label>LinkedIn URL<input type="text" id="linkedin" placeholder="linkedin.com/in/…" autocomplete="off"></label>
         <label>Portfolio URL<input type="text" id="portfolio" placeholder="yoursite.com" autocomplete="off"></label>
@@ -43,6 +47,7 @@
 
     <section>
       <h2>Education</h2>
+      <p class="section-hint">School, degree and graduation year.</p>
       <div class="field-grid">
         <label>School<input type="text" id="eduSchool" autocomplete="off"></label>
         <label>Degree<input type="text" id="eduDegree" placeholder="e.g. B.Sc." autocomplete="off"></label>
@@ -53,18 +58,21 @@
 
     <section>
       <h2>Work experience</h2>
+      <p class="section-hint">Companies, roles and dates.</p>
       <div id="workList"></div>
       <button type="button" class="add-btn" id="addWorkBtn">+ Add work experience</button>
     </section>
 
     <section>
       <h2>Languages</h2>
+      <p class="section-hint">Languages you speak and level.</p>
       <div id="languagesList"></div>
       <button type="button" class="add-btn" id="addLanguageBtn">+ Add language</button>
     </section>
 
     <section>
       <h2>Skills</h2>
+      <p class="section-hint">Your key skills and tools.</p>
       <label>Comma-separated list
         <input type="text" id="skills" placeholder="e.g. JavaScript, Figma, Project management" autocomplete="off">
       </label>
@@ -72,7 +80,7 @@
 
     <section>
       <h2>Long-form answers</h2>
-      <p class="section-hint">Write these once — insert them into applications later.</p>
+      <p class="section-hint">About you and your motivation.</p>
       <label>About me
         <textarea id="aboutMe" placeholder="A short summary about who you are and what you do."></textarea>
       </label>
@@ -86,11 +94,7 @@
 
     <section>
       <h2>Common application questions</h2>
-      <p class="section-hint">
-        Job applications repeatedly ask the same yes/no questions. Set your standard answers once
-        and the extension will select the matching radio button or checkbox when it recognizes
-        the question.
-      </p>
+      <p class="section-hint">Standard yes or no answers.</p>
       <div class="field-grid">
         <label>Authorized to work in your country?
           <select id="qWorkAuthorization">
@@ -116,21 +120,26 @@
       </div>
     </section>
 
-    <section>
-      <h2>AI fallback (optional)</h2>
-      <p class="section-hint">
-        Tier 1 matching works offline and covers English, Italian, German and Turkish forms.
-        For anything it misses, an Anthropic API key lets the extension ask Claude to match the
-        remaining fields once per site — results are cached, so it's not called again for the
-        same form. Leave this blank to use Tier 1 only.
-      </p>
-      <label>Anthropic API key
-        <div class="key-row">
-          <input type="password" id="apiKey" placeholder="sk-ant-…" autocomplete="off">
-          <button type="button" class="key-toggle-btn" id="toggleApiKey">Show</button>
-        </div>
-      </label>
-    </section>
+    <details class="advanced">
+      <summary>
+        <span class="advanced-title">Advanced</span>
+        <span class="advanced-hint">AI matching and API key.</span>
+      </summary>
+      <section>
+        <p class="section-hint">
+          Tier 1 matching works offline and covers English, Italian, German and Turkish forms.
+          For anything it misses, an Anthropic API key lets the extension ask Claude to match the
+          remaining fields once per site. Results are cached, so it's not called again for the
+          same form. Leave this blank to use Tier 1 only.
+        </p>
+        <label>Anthropic API key
+          <div class="key-row">
+            <input type="password" id="apiKey" placeholder="sk-ant-…" autocomplete="off">
+            <button type="button" class="key-toggle-btn" id="toggleApiKey">Show</button>
+          </div>
+        </label>
+      </section>
+    </details>
 
     <div class="save-bar">
       <button type="submit" class="save-btn" id="saveBtn">Save profile</button>
