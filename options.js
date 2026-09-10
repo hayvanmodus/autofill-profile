@@ -1,3 +1,5 @@
+import { importCvFromFile } from './modules/cv-import.js';
+
 (function () {
   'use strict';
 
@@ -7,6 +9,9 @@
   var languagesList = [];
 
   var el = {
+    cvFileInput: document.getElementById('cvFileInput'),
+    cvImportStatus: document.getElementById('cvImportStatus'),
+    cvImportMsg: document.getElementById('cvImportMsg'),
     form: document.getElementById('profileForm'),
     firstName: document.getElementById('firstName'),
     lastName: document.getElementById('lastName'),
@@ -262,6 +267,107 @@
       }
     };
   }
+
+  // ---- CV import -------------------------------------------------------
+  // Fills form fields from a parsed CV but never saves on its own — the
+  // user reviews and clicks "Save profile" themselves (see cv-import.js's
+  // importCvFromFile for the extraction itself).
+
+  function setCvStatus(text) {
+    el.cvImportStatus.textContent = text || '';
+  }
+
+  function setCvMessage(text, kind) {
+    el.cvImportMsg.textContent = text || '';
+    el.cvImportMsg.hidden = !text;
+    el.cvImportMsg.classList.toggle('cv-import-msg--error', kind === 'error');
+  }
+
+  function cvFailureMessage(result) {
+    switch (result.reason) {
+      case 'not-pdf':
+        return 'That file isn’t a PDF. Fields left unchanged.';
+      case 'no-text':
+        return 'Couldn’t extract any text from this PDF (it may be a scanned image). Fields left unchanged.';
+      case 'no-data':
+        return 'Couldn’t find any usable information in this CV. Fields left unchanged.';
+      default:
+        return 'Couldn’t read this CV. Fields left unchanged.';
+    }
+  }
+
+  function setIfPresent(inputEl, value) {
+    if (value) inputEl.value = value;
+  }
+
+  function fillFormFromPartialProfile(profile) {
+    var p = profile.personal || {};
+    setIfPresent(el.firstName, p.firstName);
+    setIfPresent(el.lastName, p.lastName);
+    setIfPresent(el.email, p.email);
+    setIfPresent(el.phone, p.phone);
+    setIfPresent(el.phoneCountryCode, p.phoneCountryCode);
+    setIfPresent(el.addressLine, p.addressLine);
+    setIfPresent(el.city, p.city);
+    setIfPresent(el.state, p.state);
+    setIfPresent(el.postalCode, p.postalCode);
+    setIfPresent(el.country, p.country);
+
+    var links = profile.links || {};
+    setIfPresent(el.linkedin, links.linkedin);
+    setIfPresent(el.portfolio, links.portfolio);
+    setIfPresent(el.github, links.github);
+
+    var edu = profile.education || {};
+    setIfPresent(el.eduSchool, edu.school);
+    setIfPresent(el.eduDegree, edu.degree);
+    setIfPresent(el.eduField, edu.field);
+    setIfPresent(el.eduGradYear, edu.gradYear);
+
+    if (profile.workExperience && profile.workExperience.length) {
+      workList = profile.workExperience.slice();
+      renderWorkList();
+    }
+
+    if (profile.languages && profile.languages.length) {
+      languagesList = profile.languages.slice();
+      renderLanguagesList();
+    }
+
+    if (profile.skills && profile.skills.length) {
+      el.skills.value = profile.skills.join(', ');
+    }
+  }
+
+  function runCvImport(file) {
+    setCvMessage('');
+    setCvStatus('Reading CV…');
+
+    var apiKey = el.apiKey.value.trim();
+
+    importCvFromFile(file, apiKey)
+      .then(function (result) {
+        setCvStatus('');
+        if (!result.ok) {
+          setCvMessage(cvFailureMessage(result), 'error');
+          return;
+        }
+        fillFormFromPartialProfile(result.profile);
+        setCvMessage('Fields were filled from your CV — review them before saving.');
+      })
+      .catch(function () {
+        setCvStatus('');
+        setCvMessage('Something went wrong reading this CV. Fields left unchanged.', 'error');
+      })
+      .then(function () {
+        el.cvFileInput.value = '';
+      });
+  }
+
+  el.cvFileInput.addEventListener('change', function () {
+    var file = el.cvFileInput.files && el.cvFileInput.files[0];
+    if (file) runCvImport(file);
+  });
 
   el.form.addEventListener('submit', function (e) {
     e.preventDefault();

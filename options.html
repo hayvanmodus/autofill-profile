@@ -17,6 +17,18 @@
 
   <p class="page-hint">Fill in only what you need.</p>
 
+  <section id="cvImportSection" class="cv-import">
+    <h2>Import from CV</h2>
+    <p class="section-hint">
+      Optional — upload a CV (PDF) to prefill the fields below, or skip this and fill them in by hand.
+    </p>
+    <div class="cv-import-row">
+      <input type="file" id="cvFileInput" accept="application/pdf,.pdf">
+      <span class="cv-import-status" id="cvImportStatus"></span>
+    </div>
+    <p class="cv-import-msg" id="cvImportMsg" hidden></p>
+  </section>
+
   <form id="profileForm">
 
     <section>
@@ -148,6 +160,6 @@
 
   </form>
 
-  <script src="options.js"></script>
+  <script type="module" src="options.js"></script>
 </body>
 </html>

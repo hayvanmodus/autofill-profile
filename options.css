@@ -53,6 +53,55 @@ header h1 {
   margin: 0 0 56px;
 }
 
+.cv-import {
+  margin-bottom: 56px;
+  padding: 20px 20px 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+
+.cv-import h2 {
+  margin-bottom: 8px;
+}
+
+.cv-import .section-hint {
+  margin: 0 0 16px;
+}
+
+.cv-import-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.cv-import-row input[type="file"] {
+  width: auto;
+  padding: 8px;
+  background: #fff;
+}
+
+.cv-import-status {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cv-import-msg {
+  margin: 14px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cv-import-msg:not(.cv-import-msg--error) {
+  color: var(--accent-dark);
+}
+
+.cv-import-msg--error {
+  color: #b91c1c;
+}
+
 section {
   margin-bottom: 60px;
   padding-bottom: 40px;
