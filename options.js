@@ -12,7 +12,11 @@
     lastName: document.getElementById('lastName'),
     email: document.getElementById('email'),
     phone: document.getElementById('phone'),
+    phoneCountryCode: document.getElementById('phoneCountryCode'),
+    addressLine: document.getElementById('addressLine'),
     city: document.getElementById('city'),
+    state: document.getElementById('state'),
+    postalCode: document.getElementById('postalCode'),
     country: document.getElementById('country'),
     linkedin: document.getElementById('linkedin'),
     portfolio: document.getElementById('portfolio'),
@@ -166,7 +170,11 @@
     el.lastName.value = p.lastName || '';
     el.email.value = p.email || '';
     el.phone.value = p.phone || '';
+    el.phoneCountryCode.value = p.phoneCountryCode || '';
+    el.addressLine.value = p.addressLine || '';
     el.city.value = p.city || '';
+    el.state.value = p.state || '';
+    el.postalCode.value = p.postalCode || '';
     el.country.value = p.country || '';
 
     var links = profile.links || {};
@@ -217,7 +225,11 @@
         lastName: el.lastName.value.trim(),
         email: el.email.value.trim(),
         phone: el.phone.value.trim(),
+        phoneCountryCode: el.phoneCountryCode.value.trim(),
+        addressLine: el.addressLine.value.trim(),
         city: el.city.value.trim(),
+        state: el.state.value.trim(),
+        postalCode: el.postalCode.value.trim(),
         country: el.country.value.trim()
       },
       links: {

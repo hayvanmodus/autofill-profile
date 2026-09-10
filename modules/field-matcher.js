@@ -88,6 +88,52 @@
     return false;
   }
 
+  // "Country/Territory Phone Code" (Workday) wants a dialing code like
+  // "+39", not a country name — but it contains the literal word "country",
+  // so it exact-matches the `country` def's own keyword. Used both to seed
+  // the phoneCountryCode field below and, unmodified, to hard-block
+  // `country` matching in NEGATIVE_KEYWORD_PHRASES.
+  var PHONE_CODE_PHRASES = {
+    en: ['phone code', 'dialing code', 'calling code', 'country code', 'country phone code', 'international dialing code'],
+    it: ['prefisso telefonico', 'prefisso internazionale', 'prefisso paese'],
+    de: ['landesvorwahl', 'telefonvorwahl', 'laendercode'],
+    tr: ['telefon kodu', 'ulke kodu', 'cevirme kodu']
+  };
+
+  // Qualifiers for a name that aren't the name itself — there's no profile
+  // field for any of these (see FIELD_META), so a field asking for one is
+  // deliberately left unmatched rather than filled with the legal name.
+  var NAME_QUALIFIER_NEGATIVE_PHRASES = [
+    'middle name', 'secondo nome', 'zweiter vorname', 'mittelname', 'gobek adi',
+    'preferred name', 'nome preferito', 'bevorzugter name', 'spitzname', 'tercih edilen ad', 'takma ad'
+  ];
+
+  // A field whose text contains one of these phrases is NEVER matched to
+  // that id, regardless of how well other keywords score — stronger than
+  // WEAK_KEYWORD_PHRASES above (which only guards specific ambiguous
+  // keywords), this blocks the def outright. Real-world false positives:
+  // "Legal Middle Name" and "I have a preferred name" exact-matching
+  // fullName/firstName/lastName via the bare "name" keyword, and
+  // "Country/Territory Phone Code" exact-matching `country` (see
+  // PHONE_CODE_PHRASES above).
+  var NEGATIVE_KEYWORD_PHRASES = {
+    firstName: NAME_QUALIFIER_NEGATIVE_PHRASES,
+    lastName: NAME_QUALIFIER_NEGATIVE_PHRASES,
+    fullName: NAME_QUALIFIER_NEGATIVE_PHRASES,
+    country: [].concat(PHONE_CODE_PHRASES.en, PHONE_CODE_PHRASES.it, PHONE_CODE_PHRASES.de, PHONE_CODE_PHRASES.tr)
+  };
+
+  function hasNegativeContext(ctx, negativeKeywords) {
+    for (var source in SOURCE_WEIGHTS) {
+      var text = ctx[source];
+      if (!text) continue;
+      for (var i = 0; i < negativeKeywords.length; i++) {
+        if (negativeKeywords[i].test(text)) return true;
+      }
+    }
+    return false;
+  }
+
   // ---- Multilingual keyword map -----------------------------------------
   // Language -> field id -> phrases in that language. To add a new
   // language, add ONE new top-level key here (e.g. `fr: { firstName: [...],
@@ -104,6 +150,10 @@
       phone: ['phone', 'telephone', 'mobile', 'cell', 'phone number'],
       city: ['city', 'town'],
       country: ['country', 'nation', 'country region'],
+      addressLine: ['address', 'street address', 'address line 1', 'mailing address'],
+      state: ['state', 'province', 'state province', 'region'],
+      postalCode: ['postal code', 'zip code', 'zip', 'post code'],
+      phoneCountryCode: PHONE_CODE_PHRASES.en,
       linkedin: ['linkedin', 'linked in'],
       portfolio: ['portfolio', 'personal website', 'personal site'],
       github: ['github', 'git hub'],
@@ -129,6 +179,10 @@
       phone: ['telefono', 'cellulare', 'numero di telefono'],
       city: ['città', 'citta'],
       country: ['paese', 'nazione'],
+      addressLine: ['indirizzo', 'via', 'indirizzo di residenza'],
+      state: ['provincia', 'regione'],
+      postalCode: ['codice postale'],
+      phoneCountryCode: PHONE_CODE_PHRASES.it,
       linkedin: ['linkedin'],
       portfolio: ['portfolio', 'sito web personale', 'sito personale'],
       github: ['github'],
@@ -154,6 +208,10 @@
       phone: ['telefon', 'telefonnummer', 'handynummer', 'mobilnummer'],
       city: ['stadt', 'wohnort'],
       country: ['land'],
+      addressLine: ['adresse', 'straße', 'strasse', 'anschrift'],
+      state: ['bundesland', 'kanton'],
+      postalCode: ['postleitzahl'],
+      phoneCountryCode: PHONE_CODE_PHRASES.de,
       linkedin: ['linkedin'],
       portfolio: ['portfolio', 'persönliche webseite', 'personliche webseite'],
       github: ['github'],
@@ -179,6 +237,10 @@
       phone: ['telefon numarası', 'telefon numarasi', 'cep telefonu'],
       city: ['şehir', 'sehir'],
       country: ['ülke', 'ulke'],
+      addressLine: ['adres', 'açık adres', 'acik adres'],
+      state: ['eyalet', 'vilayet'],
+      postalCode: ['posta kodu'],
+      phoneCountryCode: PHONE_CODE_PHRASES.tr,
       linkedin: ['linkedin'],
       portfolio: ['portfolyo', 'kişisel web sitesi', 'kisisel web sitesi'],
       github: ['github'],
@@ -228,6 +290,14 @@
     phone: { getValue: function (p) { return p.personal && p.personal.phone; } },
     city: { getValue: function (p) { return p.personal && p.personal.city; } },
     country: { selectable: true, getValue: function (p) { return p.personal && p.personal.country; } },
+    addressLine: { getValue: function (p) { return p.personal && p.personal.addressLine; } },
+    state: { getValue: function (p) { return p.personal && p.personal.state; } },
+    postalCode: { getValue: function (p) { return p.personal && p.personal.postalCode; } },
+    // A dialing code like "+39" is a distinct concept from the country name
+    // itself — see NEGATIVE_KEYWORD_PHRASES.country above, which is what
+    // stops a Workday "Country/Territory Phone Code" field from being
+    // filled with the country name instead of this.
+    phoneCountryCode: { getValue: function (p) { return p.personal && p.personal.phoneCountryCode; } },
     linkedin: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.linkedin); } },
     portfolio: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.portfolio); } },
     github: { getValue: function (p) { return normalizeUrlValue(p.links && p.links.github); } },
@@ -414,10 +484,15 @@
         };
       });
 
+      var negativeKeywords = (NEGATIVE_KEYWORD_PHRASES[id] || []).map(function (phrase) {
+        return new RegExp('\\b' + escapeRegExp(normalize(phrase)) + '\\b');
+      });
+
       var meta = metaMap[id];
       defs.push({
         id: id,
         normKeywords: normKeywords,
+        negativeKeywords: negativeKeywords,
         description: (packs.en[id] || []).join(' / ') || id,
         longtext: !!meta.longtext,
         selectable: !!meta.selectable,
@@ -809,6 +884,10 @@
   // ---- Scoring -----------------------------------------------------------
 
   function scoreDef(ctx, def) {
+    if (def.negativeKeywords && def.negativeKeywords.length && hasNegativeContext(ctx, def.negativeKeywords)) {
+      return 0;
+    }
+
     var score = 0;
     for (var source in SOURCE_WEIGHTS) {
       var text = ctx[source];
@@ -854,6 +933,29 @@
   // field is instead tried against QUESTION_DEFS (see
   // matchElementAsQuestion below).
   var SENTENCE_UNSAFE_IDS = ['firstName', 'lastName', 'fullName', 'city', 'country'];
+
+  // Name fields require an actual text input. Real-world false positive on
+  // Workday: "I have a preferred name" exact-matched fullName's own "name"
+  // keyword. It turned out to carry neither type="checkbox" nor any
+  // checkbox-ish ARIA role — Workday's component library apparently
+  // doesn't expose one here — so detecting it by attribute alone wasn't
+  // enough. A field name is never phrased as a sentence, though: real
+  // field labels are noun phrases ("Middle Name", "Preferred Name"), while
+  // this is a first-person statement. STATEMENT_LEAD_RE below catches that
+  // shape regardless of what markup renders it.
+  var NAME_FIELD_IDS = ['firstName', 'lastName', 'fullName'];
+
+  var STATEMENT_LEAD_RE = /^(i\s+(have|am|agree|certify|confirm|understand|acknowledge|hereby|require|need|would|wish)|do\s+you|are\s+you|is\s+this|will\s+you|have\s+you|can\s+you|did\s+you|would\s+you)\b/i;
+
+  function isCheckboxLike(el, raw) {
+    var type = (el.getAttribute && el.getAttribute('type') || '').toLowerCase();
+    var role = (el.getAttribute && el.getAttribute('role') || '').toLowerCase();
+    if (type === 'checkbox' || type === 'radio' || role === 'checkbox' || role === 'radio' || role === 'switch') {
+      return true;
+    }
+    var text = raw ? String(raw.label || raw.aria || '').trim() : '';
+    return STATEMENT_LEAD_RE.test(text);
+  }
 
   var QUESTION_MARK_RE = /[?？]\s*$/;
   var QUESTION_LEAD_RE = /^(are|do|does|did|is|was|were|will|would|can|could|have|has|had)\s+(you|i)\b/i;
@@ -953,6 +1055,11 @@
     }
 
     var raw = getRawSignals(el);
+
+    if (isCheckboxLike(el, raw)) {
+      candidateDefs = candidateDefs.filter(function (d) { return NAME_FIELD_IDS.indexOf(d.id) === -1; });
+    }
+
     var isQuestionLike = !kind && looksLikeQuestionText(raw.label || raw.aria || '');
     if (isQuestionLike) {
       candidateDefs = candidateDefs.filter(function (d) { return SENTENCE_UNSAFE_IDS.indexOf(d.id) === -1; });
