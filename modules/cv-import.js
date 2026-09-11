@@ -308,37 +308,53 @@ function isCountryName(text) {
   return COUNTRY_NAMES.indexOf(normalizeLine(text)) !== -1;
 }
 
+// An apartment/unit/suite token sitting in its own comma-separated part
+// right after the street — "T318", "Apt 4B", "Suite 200", "Unit 5" — is
+// still part of the street address, not the city.
+var UNIT_TOKEN_RE = /^(?:[A-Za-z]{1,3}\d{1,5}[A-Za-z]?|(?:apt|apartment|suite|ste|unit|fl|floor|no|nr)\.?\s*\d+[A-Za-z]?)$/i;
+
 // Splits one comma-separated address line into its parts. Street is always
-// the first part; postal code and country are found by pattern/name
-// wherever they sit among the rest, and whatever's left, in order, is city
-// then state/province — matching how these lines are conventionally
-// written ("street, city, state, postal code, country").
+// the first part (plus any unit/apartment token(s) immediately after it —
+// see UNIT_TOKEN_RE); postal code and country are found by pattern/name
+// wherever they sit among the rest, in either order and regardless of
+// position, and removed from consideration once found.
+//
+// Whatever's left after that is city, then optionally state/province — but
+// state is only trusted when a country was also present. Without a
+// country, a part after the city has nothing to disambiguate it from a
+// district/borough name (e.g. Berlin's "Mitte") rather than an actual
+// state, so it's left alone rather than guessed at.
 function parseAddressLine(line) {
   var parts = line.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
   if (parts.length < 2) return null;
 
-  var street = parts[0];
-  var rest = parts.slice(1);
-
   var postalCode = '';
-  for (var i = 0; i < rest.length; i++) {
-    if (POSTAL_CODE_RE.test(rest[i])) {
-      postalCode = rest[i];
-      rest.splice(i, 1);
+  for (var i = 0; i < parts.length; i++) {
+    if (POSTAL_CODE_RE.test(parts[i])) {
+      postalCode = parts[i];
+      parts.splice(i, 1);
       break;
     }
   }
 
   var country = '';
-  for (var j = 0; j < rest.length; j++) {
-    if (isCountryName(rest[j])) {
-      country = rest[j];
-      rest.splice(j, 1);
+  for (var j = 0; j < parts.length; j++) {
+    if (isCountryName(parts[j])) {
+      country = parts[j];
+      parts.splice(j, 1);
       break;
     }
   }
 
-  return { addressLine: street, city: rest[0] || '', state: rest[1] || '', postalCode: postalCode, country: country };
+  var street = parts.shift() || '';
+  while (parts.length && UNIT_TOKEN_RE.test(parts[0])) {
+    street += ', ' + parts.shift();
+  }
+
+  var city = parts.shift() || '';
+  var state = country ? (parts.shift() || '') : '';
+
+  return { addressLine: street, city: city, state: state, postalCode: postalCode, country: country };
 }
 
 // Looks for a comma-separated address among the first few lines (the
@@ -504,13 +520,62 @@ var DEGREE_WORDS = [
   'lisans', 'yüksek lisans', 'yuksek lisans', 'doktora'
 ];
 
+// Cuts a line at the first round/dot bullet glyph — e.g. "Bachelor of
+// Science in Economics • Relevant Coursework: ..." -> "Bachelor of Science
+// in Economics". Deliberately excludes a plain "-"/"*", since those
+// routinely appear inside a real degree title rather than introducing a
+// trailing list.
+function cutAtBullet(text) {
+  var idx = text.search(/[•●▪◦‣∙·]/);
+  return idx === -1 ? text : text.slice(0, idx).trim();
+}
+
 var LEVEL_WORDS = {
-  Native: ['native', 'mother tongue', 'madrelingua', 'muttersprache', 'anadil', 'ana dil'],
-  Fluent: ['fluent', 'fluente', 'corrente', 'fließend', 'fliessend', 'akıcı', 'akici'],
-  Advanced: ['advanced', 'professional working proficiency', 'avanzato', 'fortgeschritten', 'ileri'],
-  Intermediate: ['intermediate', 'conversational', 'intermedio', 'mittelstufe', 'orta'],
-  Basic: ['basic', 'base', 'elementare', 'grundkenntnisse', 'başlangıç', 'baslangic']
+  Native: [
+    'native', 'mother tongue', 'madrelingua', 'muttersprache', 'anadil', 'ana dil',
+    'lengua materna', 'materna', 'langue maternelle', 'maternelle', 'língua materna', 'lingua materna',
+    'moedertaal'
+  ],
+  Fluent: [
+    'fluent', 'fluente', 'corrente', 'fließend', 'fliessend', 'akıcı', 'akici',
+    'fluido', 'fluida', 'courant', 'courante', 'vloeiend'
+  ],
+  Advanced: [
+    'advanced', 'professional working proficiency', 'proficient', 'avanzato', 'fortgeschritten', 'ileri',
+    'avanzado', 'avancé', 'avance', 'avançado', 'avancado', 'gevorderd'
+  ],
+  Intermediate: [
+    'intermediate', 'conversational', 'intermedio', 'mittelstufe', 'orta',
+    'intermédiaire', 'intermediaire', 'intermediário', 'intermediario', 'gemiddeld'
+  ],
+  Basic: [
+    'basic', 'base', 'elementare', 'grundkenntnisse', 'başlangıç', 'baslangic',
+    'básico', 'basico', 'de base', 'débutant', 'debutant', 'basis'
+  ]
 };
+
+// Words/phrases from LEVEL_WORDS above, sorted longest-first so a phrase
+// like "mother tongue" matches whole before a shorter overlapping word
+// could. Reused to strip a leading proficiency word off a language NAME
+// (see stripProficiencyPrefix) — separately from using the same words to
+// detect the proficiency itself (detectProficiencyFromText below).
+var ALL_LEVEL_WORDS = Object.keys(LEVEL_WORDS)
+  .reduce(function (acc, key) { return acc.concat(LEVEL_WORDS[key]); }, [])
+  .sort(function (a, b) { return b.length - a.length; });
+
+// "Fluent in German", "Proficient in French", "Native English" — the
+// language name itself only starts after the proficiency word and an
+// optional short connector ("in", "en", ...). The CEFR/test-score based
+// proficiency (detectProficiencyFromText) already reads the level
+// correctly regardless of this — this only cleans up the NAME.
+var LANGUAGE_PROFICIENCY_PREFIX_RE = new RegExp(
+  '^(?:' + ALL_LEVEL_WORDS.map(escapeRegExp).join('|') + ')\\b(?:\\s+(?:in|en|em|di|a|à)\\b)?[\\s:.-]*',
+  'i'
+);
+
+function stripProficiencyPrefix(name) {
+  return name.replace(LANGUAGE_PROFICIENCY_PREFIX_RE, '').trim();
+}
 
 // ---- Proficiency detection from CEFR codes and language test scores ------
 // Shared by per-line/per-item language parsing (a dedicated "Languages"
@@ -857,7 +922,12 @@ function isHeadingLine(line, headingWords) {
   var norm = normalizeLine(line);
   if (norm.length > 40) return false;
   for (var i = 0; i < headingWords.length; i++) {
-    if (norm === headingWords[i] || norm.indexOf(headingWords[i]) === 0) return true;
+    var w = headingWords[i];
+    if (norm === w) return true;
+    // Prefix match ("Experience:" heading followed by more text on the
+    // same line) — but only at a real word boundary, so a prose sentence
+    // like "Experienced software engineer..." can't match "experience".
+    if (norm.indexOf(w) === 0 && !/[a-z]/.test(norm.charAt(w.length))) return true;
   }
   return false;
 }
@@ -939,15 +1009,23 @@ function extractEducation(lines) {
       school = stripTrailingLocation(lines[i].trim());
     }
     if (!degree && DEGREE_WORDS.some(function (w) { return norm.indexOf(w) !== -1; })) {
-      // Same for a trailing graduation date on the degree/field line — it's
-      // still read separately below via findYear, so dropping it here just
-      // keeps it out of the degree/field text itself.
-      degree = stripTrailingDate(lines[i].trim());
+      // A "Relevant Coursework: ..." list is often tacked onto the same
+      // line as the degree, after a bullet glyph — cut there first so it
+      // never ends up in degree/field. A plain "-" isn't cut on here since
+      // it's routinely part of the degree title itself (e.g. "Bachelor of
+      // Science - Computer Science"), unlike a round bullet character.
+      var degreeLine = cutAtBullet(lines[i].trim());
+      // Trailing graduation date on the degree/field line — it's still
+      // read separately below via findYear (which tolerates its absence),
+      // so dropping it here just keeps it out of the degree/field text.
+      degree = stripTrailingDate(degreeLine);
       var fieldMatch = degree.match(/\bin\s+([A-ZÀ-Ý][\w\s&,-]{2,40})/);
       if (fieldMatch) field = stripTrailingDate(fieldMatch[1].trim());
     }
   }
 
+  // Absent (empty) rather than required — a degree/school found with no
+  // graduation year anywhere in the section still produces a real entry.
   var gradYear = findYear(lines);
 
   if (!school && !degree && !field && !gradYear) return null;
@@ -956,10 +1034,19 @@ function extractEducation(lines) {
 
 // A "Profile"/"Summary"/"About me"/"Objective" section is free-flowing
 // prose wrapped across several lines by the PDF, not a list — join them
-// back into one paragraph instead of keeping the line breaks.
+// back into one paragraph instead of keeping the line breaks. Stops at the
+// first line that looks like the start of another section, same defense
+// extractWorkExperience uses — splitIntoSections already bounds this via
+// SECTION_HEADINGS, but a heading it doesn't recognize would otherwise let
+// the whole rest of the CV (e.g. work experience bullets) bleed in here.
 function extractAboutMe(lines) {
   if (!lines || !lines.length) return '';
-  return lines.join(' ').replace(/\s+/g, ' ').trim();
+  var kept = [];
+  for (var i = 0; i < lines.length; i++) {
+    if (isAnySectionHeading(lines[i])) break;
+    kept.push(lines[i]);
+  }
+  return kept.join(' ').replace(/\s+/g, ' ').trim().replace(/^[-–—•*●▪◦‣∙·]\s*/, '');
 }
 
 // A description/bullet line under a job — starts with a bullet glyph (or a
@@ -1273,7 +1360,7 @@ function extractWorkExperience(lines) {
 // "Languages" section) and parseInlineLanguagesContent (one language per
 // comma-separated item, in an inline "Languages: ..." line).
 function parseLanguageEntry(itemText) {
-  var name = itemText.split(/[-–—(:]/)[0].trim();
+  var name = stripProficiencyPrefix(itemText.split(/[-–—(:]/)[0].trim());
   if (!name || name.length > 30) return null;
   return { language: name, proficiency: detectProficiencyFromText(itemText) || 'Fluent' };
 }
@@ -1293,9 +1380,14 @@ function extractLanguages(lines) {
   return out.slice(0, 10);
 }
 
+// "German (DSD II - C1) and English" — "and" (plus its equivalents in the
+// eight supported languages) separates items here just as much as a comma
+// does; without this, everything after it is lost inside the first item.
+var LANGUAGE_LIST_SEP_RE = /[,;]|\s+(?:and|und|ve|y|et|en|e)\s+/i;
+
 function parseInlineLanguagesContent(content) {
   return content
-    .split(/[,;]/)
+    .split(LANGUAGE_LIST_SEP_RE)
     .map(function (item) { return item.trim(); })
     .filter(Boolean)
     .map(parseLanguageEntry)
@@ -1367,7 +1459,17 @@ function stripLeadingLabel(line) {
 function extractSkills(lines) {
   if (!lines || !lines.length) return [];
 
-  var joined = lines.map(stripLeadingLabel).join(', ');
+  // A "Skills" section sometimes holds more than the skills list itself
+  // (e.g. a stray sub-heading or unrelated line) — if one line actually
+  // starts with a "Skills:"/"Technical Skills:" label, that's the real
+  // list and the rest of the section is noise. Otherwise fall back to
+  // every line, for the common case of a plain comma list with no label.
+  var labeledLine = lines.find(function (line) {
+    var m = line.match(LEADING_LABEL_RE);
+    return m && /skill/i.test(m[0]);
+  });
+
+  var joined = (labeledLine ? [stripLeadingLabel(labeledLine)] : lines.map(stripLeadingLabel)).join(', ');
   return joined
     .split(/[,;•·|]/)
     .map(function (s) { return s.trim(); })

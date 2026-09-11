@@ -309,7 +309,9 @@ import { importCvFromFile } from './modules/cv-import.js';
   }
 
   function setIfPresent(inputEl, value) {
-    if (value) inputEl.value = value;
+    if (!value) return 0;
+    inputEl.value = value;
+    return 1;
   }
 
   // Merges CV-derived entries into a list already on the form instead of
@@ -329,34 +331,41 @@ import { importCvFromFile } from './modules/cv-import.js';
     return merged;
   }
 
+  // CV import can't cover every layout, so the result reports what it
+  // actually found instead of implying it read everything: a count of
+  // scalar fields filled, plus which of the five major sections (each
+  // either present or not, unlike the scalar fields above) came up empty.
   function fillFormFromPartialProfile(profile) {
     var p = profile.personal || {};
-    setIfPresent(el.firstName, p.firstName);
-    setIfPresent(el.lastName, p.lastName);
-    setIfPresent(el.email, p.email);
-    setIfPresent(el.phone, p.phone);
-    setIfPresent(el.phoneCountryCode, p.phoneCountryCode);
-    setIfPresent(el.addressLine, p.addressLine);
-    setIfPresent(el.city, p.city);
-    setIfPresent(el.state, p.state);
-    setIfPresent(el.postalCode, p.postalCode);
-    setIfPresent(el.country, p.country);
+    var filled = 0;
+    filled += setIfPresent(el.firstName, p.firstName);
+    filled += setIfPresent(el.lastName, p.lastName);
+    filled += setIfPresent(el.email, p.email);
+    filled += setIfPresent(el.phone, p.phone);
+    filled += setIfPresent(el.phoneCountryCode, p.phoneCountryCode);
+    filled += setIfPresent(el.addressLine, p.addressLine);
+    filled += setIfPresent(el.city, p.city);
+    filled += setIfPresent(el.state, p.state);
+    filled += setIfPresent(el.postalCode, p.postalCode);
+    filled += setIfPresent(el.country, p.country);
 
     var links = profile.links || {};
-    setIfPresent(el.linkedin, links.linkedin);
-    setIfPresent(el.portfolio, links.portfolio);
-    setIfPresent(el.github, links.github);
+    filled += setIfPresent(el.linkedin, links.linkedin);
+    filled += setIfPresent(el.portfolio, links.portfolio);
+    filled += setIfPresent(el.github, links.github);
 
     var edu = profile.education || {};
-    setIfPresent(el.eduSchool, edu.school);
-    setIfPresent(el.eduDegree, edu.degree);
-    setIfPresent(el.eduField, edu.field);
-    setIfPresent(el.eduGradYear, edu.gradYear);
+    var hasEducation = !!(edu.school || edu.degree || edu.field || edu.gradYear);
+    filled += setIfPresent(el.eduSchool, edu.school);
+    filled += setIfPresent(el.eduDegree, edu.degree);
+    filled += setIfPresent(el.eduField, edu.field);
+    filled += setIfPresent(el.eduGradYear, edu.gradYear);
 
     var essays = profile.essays || {};
-    setIfPresent(el.aboutMe, essays.aboutMe);
+    filled += setIfPresent(el.aboutMe, essays.aboutMe);
 
-    if (profile.workExperience && profile.workExperience.length) {
+    var hasWork = !!(profile.workExperience && profile.workExperience.length);
+    if (hasWork) {
       captureWorkList();
       workList = mergeEntries(workList, profile.workExperience, function (w) {
         return (w.company || '').trim().toLowerCase() + '|' + (w.position || '').trim().toLowerCase() + '|' + (w.startDate || '');
@@ -369,17 +378,45 @@ import { importCvFromFile } from './modules/cv-import.js';
     // current snapshot, so a stale entry from a previous import (or from
     // hand-editing) should not survive alongside it. mergeEntries([], ...)
     // still dedupes the CV's own list case-insensitively.
-    if (profile.languages && profile.languages.length) {
+    var hasLanguages = !!(profile.languages && profile.languages.length);
+    if (hasLanguages) {
       languagesList = mergeEntries([], profile.languages, function (l) {
         return (l.language || '').trim().toLowerCase();
       });
       renderLanguagesList();
     }
 
-    if (profile.skills && profile.skills.length) {
+    var hasSkills = !!(profile.skills && profile.skills.length);
+    if (hasSkills) {
       var dedupedSkills = mergeEntries([], profile.skills, function (s) { return s.trim().toLowerCase(); });
       el.skills.value = dedupedSkills.join(', ');
     }
+
+    var empty = [];
+    if (!hasEducation) empty.push('education');
+    if (!hasWork) empty.push('work experience');
+    if (!hasLanguages) empty.push('languages');
+    if (!hasSkills) empty.push('skills');
+    if (!essays.aboutMe) empty.push('about me');
+
+    return { filled: filled, empty: empty };
+  }
+
+  function joinWithAnd(items) {
+    if (items.length < 2) return items.join('');
+    return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+  }
+
+  function cvImportSummaryMessage(summary) {
+    var fieldWord = summary.filled === 1 ? 'field' : 'fields';
+    var base = 'Filled ' + summary.filled + ' ' + fieldWord + ' from your CV.';
+    if (!summary.empty.length) return base + ' Review before saving.';
+
+    var names = joinWithAnd(summary.empty);
+    var wasnt = summary.empty.length === 1 ? 'wasn\'t' : 'weren\'t';
+    var them = summary.empty.length === 1 ? 'it' : 'them';
+    return base + ' ' + names.charAt(0).toUpperCase() + names.slice(1) +
+      ' ' + wasnt + ' recognised, add ' + them + ' below.';
   }
 
   function runCvImport(file) {
@@ -395,8 +432,8 @@ import { importCvFromFile } from './modules/cv-import.js';
           setCvMessage(cvFailureMessage(result), 'error');
           return;
         }
-        fillFormFromPartialProfile(result.profile);
-        setCvMessage('Fields were filled from your CV — review them before saving.');
+        var summary = fillFormFromPartialProfile(result.profile);
+        setCvMessage(cvImportSummaryMessage(summary));
       })
       .catch(function () {
         setCvStatus('');
