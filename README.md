@@ -1,7 +1,7 @@
 # AutoFill Profile
 
 A browser extension that fills job application forms from a profile you set up once.
-
+![Options page](docs/options.png)
 ## The problem
 
 Job applications ask the same fields every time. Name, email, phone, address, education, work history, languages, skills, and the standard yes/no questions like work authorization and visa sponsorship. Browser autofill only knows name, address, and phone. It has no idea what to do with the rest, so you end up retyping the same information on every application.
