@@ -94,7 +94,8 @@ var PROFILE_JSON_SHAPE = [
   '  "education": { "school": "", "degree": "", "field": "", "gradYear": "" },',
   '  "workExperience": [ { "company": "", "position": "", "startDate": "", "endDate": "" } ],',
   '  "languages": [ { "language": "", "proficiency": "Basic|Intermediate|Advanced|Fluent|Native" } ],',
-  '  "skills": [ "" ]',
+  '  "skills": [ "" ],',
+  '  "essays": { "aboutMe": "" }',
   '}'
 ].join('\n');
 
@@ -112,8 +113,10 @@ var SYSTEM_PROMPT = [
   'Normalize workExperience dates to "YYYY-MM" when a month is known, or',
   '"YYYY" when only a year is known; use an empty string for a current/',
   'ongoing end date. "proficiency" must be exactly one of Basic, Intermediate,',
-  'Advanced, Fluent, Native (pick the closest). No prose, no markdown code',
-  'fences, no explanation — JSON only.'
+  'Advanced, Fluent, Native (pick the closest). "essays.aboutMe" is the text of',
+  'a "Profile", "Summary", "About me" or "Objective" section, if the CV has',
+  'one — omit it otherwise. No prose, no markdown code fences, no',
+  'explanation — JSON only.'
 ].join('\n');
 
 function parseJsonLoose(text) {
@@ -148,18 +151,24 @@ function sanitizeApiProfile(raw) {
   var p = raw.personal || {};
   var links = raw.links || {};
   var edu = raw.education || {};
+  var essays = raw.essays || {};
 
   var workExperience = Array.isArray(raw.workExperience) ? raw.workExperience : [];
   var languages = Array.isArray(raw.languages) ? raw.languages : [];
   var skills = Array.isArray(raw.skills) ? raw.skills : [];
+
+  var phone = str(p.phone);
 
   return {
     personal: {
       firstName: str(p.firstName),
       lastName: str(p.lastName),
       email: str(p.email),
-      phone: str(p.phone),
-      phoneCountryCode: str(p.phoneCountryCode),
+      phone: phone,
+      // Falls back to deriving it from the phone number itself when the
+      // model didn't fill this in but the number is in international
+      // format (see derivePhoneCountryCode).
+      phoneCountryCode: str(p.phoneCountryCode) || derivePhoneCountryCode(phone),
       addressLine: str(p.addressLine),
       city: str(p.city),
       state: str(p.state),
@@ -194,7 +203,8 @@ function sanitizeApiProfile(raw) {
         return { language: lang, proficiency: LEVELS.indexOf(prof) !== -1 ? prof : 'Fluent' };
       })
       .filter(function (l) { return l.language; }),
-    skills: skills.map(str).filter(Boolean)
+    skills: skills.map(str).filter(Boolean),
+    essays: { aboutMe: str(essays.aboutMe), whyThisRole: '', strengths: '' }
   };
 }
 
@@ -246,6 +256,106 @@ async function extractProfileViaApi(text, apiKey) {
 
 var EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 var PHONE_RE = /(\+?\d[\d .()\-]{7,}\d)/g;
+var LINKEDIN_URL_RE = /(?:https?:\/\/)?(?:www\.)?linkedin\.com\/in\/[A-Za-z0-9_-]+\/?/i;
+var GITHUB_URL_RE = /(?:https?:\/\/)?(?:www\.)?github\.com\/[A-Za-z0-9_-]+\/?/i;
+
+function findUrl(text, re) {
+  var m = text.match(re);
+  return m ? m[0].trim() : '';
+}
+
+// A phone written in international format always has its calling code
+// (1-3 digits) set off from the rest of the number by a space or other
+// separator — "+44 7700 900142", "+351 912 345 678" — so the digit run
+// right after "+" is the code; \d{1,3} being greedy naturally stops at
+// that separator rather than eating into the local number.
+function derivePhoneCountryCode(phone) {
+  var m = (phone || '').match(/^\+(\d{1,3})/);
+  return m ? '+' + m[1] : '';
+}
+
+// "City, Country" or "City, ST" postal codes: UK-style alphanumeric
+// ("WC1R 4LL", "SW1A 1AA"), or 4-5 numeric digits (continental European,
+// e.g. Italian "20123", or US ZIP/ZIP+4 "94105"/"94105-1234").
+var POSTAL_CODE_RE = /^(?:[A-Z]{1,2}\d[A-Z0-9]?\s?\d[A-Z]{2}|\d{4,5}(?:-\d{4})?)$/i;
+
+// Not exhaustive — English names plus native spellings for the 8 supported
+// languages' most likely home countries. Good enough to recognize the
+// country segment of an address line; anything else just falls through to
+// city/state, which is a harmless miss (see parseAddressLine).
+var COUNTRY_NAMES = [
+  'united kingdom', 'uk', 'u.k.', 'great britain', 'england', 'scotland', 'wales', 'northern ireland',
+  'united states', 'usa', 'u.s.a.', 'united states of america',
+  'italy', 'italia',
+  'germany', 'deutschland',
+  'turkey', 'türkiye', 'turkiye',
+  'spain', 'españa', 'espana',
+  'france',
+  'portugal',
+  'netherlands', 'the netherlands', 'nederland', 'holland',
+  'ireland', 'canada', 'australia',
+  'switzerland', 'schweiz', 'suisse', 'svizzera',
+  'austria', 'österreich', 'osterreich',
+  'belgium', 'belgië', 'belgie', 'belgique',
+  'poland', 'polska', 'sweden', 'sverige', 'norway', 'norge',
+  'denmark', 'danmark', 'finland', 'suomi', 'greece',
+  'brazil', 'brasil', 'mexico', 'méxico',
+  'india', 'china', 'japan',
+  'united arab emirates', 'uae'
+];
+
+function isCountryName(text) {
+  return COUNTRY_NAMES.indexOf(normalizeLine(text)) !== -1;
+}
+
+// Splits one comma-separated address line into its parts. Street is always
+// the first part; postal code and country are found by pattern/name
+// wherever they sit among the rest, and whatever's left, in order, is city
+// then state/province — matching how these lines are conventionally
+// written ("street, city, state, postal code, country").
+function parseAddressLine(line) {
+  var parts = line.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  if (parts.length < 2) return null;
+
+  var street = parts[0];
+  var rest = parts.slice(1);
+
+  var postalCode = '';
+  for (var i = 0; i < rest.length; i++) {
+    if (POSTAL_CODE_RE.test(rest[i])) {
+      postalCode = rest[i];
+      rest.splice(i, 1);
+      break;
+    }
+  }
+
+  var country = '';
+  for (var j = 0; j < rest.length; j++) {
+    if (isCountryName(rest[j])) {
+      country = rest[j];
+      rest.splice(j, 1);
+      break;
+    }
+  }
+
+  return { addressLine: street, city: rest[0] || '', state: rest[1] || '', postalCode: postalCode, country: country };
+}
+
+// Looks for a comma-separated address among the first few lines (the
+// contact block) — restricted to the top of the CV rather than the whole
+// text so a bullet like "Worked with clients in Paris, France and Berlin,
+// Germany" elsewhere can't be mistaken for the candidate's own address.
+function extractAddress(lines) {
+  var candidateLines = lines.slice(0, 10);
+  for (var i = 0; i < candidateLines.length; i++) {
+    var parts = candidateLines[i].split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    if (parts.length < 3) continue;
+    var hasPostal = parts.some(function (p) { return POSTAL_CODE_RE.test(p); });
+    var hasCountry = parts.some(isCountryName);
+    if (hasPostal || hasCountry) return parseAddressLine(candidateLines[i]);
+  }
+  return null;
+}
 
 var CV_TITLE_LINES = ['curriculum vitae', 'resume', 'cv', 'lebenslauf', 'özgeçmiş', 'ozgecmis'];
 
@@ -274,6 +384,16 @@ var INLINE_LABELS = {
 };
 
 var SECTION_HEADINGS = {
+  aboutMe: [
+    'about me', 'profile', 'summary', 'objective', 'professional summary', 'summary of qualifications',
+    'chi sono', 'profilo', 'sommario', 'obiettivo', 'profilo professionale',
+    'über mich', 'uber mich', 'profil', 'zusammenfassung', 'ziel', 'berufliches profil',
+    'hakkımda', 'hakkimda', 'özet', 'ozet', 'hedef',
+    'sobre mí', 'sobre mi', 'perfil', 'resumen', 'objetivo',
+    'à propos de moi', 'a propos de moi', 'synthèse', 'synthese', 'objectif',
+    'sobre mim', 'resumo',
+    'over mij', 'profiel', 'samenvatting', 'doel'
+  ],
   education: [
     'education', 'academic background',
     'istruzione', 'formazione', 'formazione accademica',
@@ -650,6 +770,20 @@ var DATE_RANGE_RE = new RegExp(
   'iu'
 );
 
+// Matches a trailing date or date range at the end of a string — e.g. the
+// "  July 2025" or "  2018 - 2022" that a degree/field-of-study line often
+// has tacked onto it via the same column-gap layout as work experience
+// (see groupItemsIntoLines). The range half is optional, so this strips
+// either a lone trailing date or a full trailing range.
+var TRAILING_DATE_RE = new RegExp(
+  '\\s*(?:' + DATE_TOKEN_SRC + '\\s*' + DATE_SEP_SRC + '\\s*)?(?:' + DATE_TOKEN_SRC + '|' + ONGOING_SRC + ')\\s*$',
+  'iu'
+);
+
+function stripTrailingDate(text) {
+  return (text || '').replace(TRAILING_DATE_RE, '').trim();
+}
+
 var MONTH_YEAR_RE = new RegExp('^' + MONTH_NAME_SRC_CAP + '\\.?\\s+((?:19|20)\\d{2})$', 'i');
 var YEAR_MONTH_RE = new RegExp('^((?:19|20)\\d{2})\\s+' + MONTH_NAME_SRC_CAP + '\\.?$', 'i');
 
@@ -799,12 +933,18 @@ function extractEducation(lines) {
   for (var i = 0; i < lines.length; i++) {
     var norm = normalizeLine(lines[i]);
     if (!school && SCHOOL_WORDS.some(function (w) { return norm.indexOf(w) !== -1; })) {
-      school = lines[i].trim();
+      // Same column-gap artifact as work experience — a school line often
+      // has its city/country packed onto the end (see stripTrailingLocation
+      // and groupItemsIntoLines' column-gap handling above).
+      school = stripTrailingLocation(lines[i].trim());
     }
     if (!degree && DEGREE_WORDS.some(function (w) { return norm.indexOf(w) !== -1; })) {
-      degree = lines[i].trim();
-      var fieldMatch = lines[i].match(/\bin\s+([A-ZÀ-Ý][\w\s&,-]{2,40})/);
-      if (fieldMatch) field = fieldMatch[1].trim();
+      // Same for a trailing graduation date on the degree/field line — it's
+      // still read separately below via findYear, so dropping it here just
+      // keeps it out of the degree/field text itself.
+      degree = stripTrailingDate(lines[i].trim());
+      var fieldMatch = degree.match(/\bin\s+([A-ZÀ-Ý][\w\s&,-]{2,40})/);
+      if (fieldMatch) field = stripTrailingDate(fieldMatch[1].trim());
     }
   }
 
@@ -812,6 +952,14 @@ function extractEducation(lines) {
 
   if (!school && !degree && !field && !gradYear) return null;
   return { school: school, degree: degree, field: field, gradYear: gradYear };
+}
+
+// A "Profile"/"Summary"/"About me"/"Objective" section is free-flowing
+// prose wrapped across several lines by the PDF, not a list — join them
+// back into one paragraph instead of keeping the line breaks.
+function extractAboutMe(lines) {
+  if (!lines || !lines.length) return '';
+  return lines.join(' ').replace(/\s+/g, ' ').trim();
 }
 
 // A description/bullet line under a job — starts with a bullet glyph (or a
@@ -1204,10 +1352,22 @@ function extractInlineLabeledContent(lines) {
   return { languages: languages, remainingLines: remainingLines };
 }
 
+// Strips a leading "Label:" from a line — e.g. "Technical Skills:  Excel,
+// SAP" -> "Excel, SAP" — so a sub-label inside the skills section body
+// (as opposed to its own SECTION_HEADINGS heading) doesn't end up glued to
+// the first real skill. Only matches a label made of letters/spaces, so a
+// skill that happens to contain a colon (unlikely, but e.g. "C++: modern")
+// is left alone.
+var LEADING_LABEL_RE = /^\p{Lu}[\p{L}\s]{1,30}:\s*/u;
+
+function stripLeadingLabel(line) {
+  return line.replace(LEADING_LABEL_RE, '');
+}
+
 function extractSkills(lines) {
   if (!lines || !lines.length) return [];
 
-  var joined = lines.join(', ');
+  var joined = lines.map(stripLeadingLabel).join(', ');
   return joined
     .split(/[,;•·|]/)
     .map(function (s) { return s.trim(); })
@@ -1241,13 +1401,18 @@ function extractProfileByPattern(text) {
 
   var emailMatch = text.match(EMAIL_RE);
   var phone = findPhone(text);
+  var phoneCountryCode = derivePhoneCountryCode(phone);
+  var linkedin = findUrl(text, LINKEDIN_URL_RE);
+  var github = findUrl(text, GITHUB_URL_RE);
   var name = extractName(lines);
+  var address = extractAddress(lines) || {};
 
   var inline = extractInlineLabeledContent(lines);
   var sections = splitIntoSections(inline.remainingLines);
   var education = extractEducation(sections.education);
   var workExperience = extractWorkExperience(sections.experience);
   var skills = extractSkills(sections.skills);
+  var aboutMe = extractAboutMe(sections.aboutMe);
 
   var testDerivedLanguages = extractTestDerivedLanguages(lines);
   var languages = mergeLanguageLists(extractLanguages(sections.languages), inline.languages, testDerivedLanguages);
@@ -1258,18 +1423,19 @@ function extractProfileByPattern(text) {
       lastName: (name && name.lastName) || '',
       email: emailMatch ? emailMatch[0] : '',
       phone: phone,
-      phoneCountryCode: '',
-      addressLine: '',
-      city: '',
-      state: '',
-      postalCode: '',
-      country: ''
+      phoneCountryCode: phoneCountryCode,
+      addressLine: address.addressLine || '',
+      city: address.city || '',
+      state: address.state || '',
+      postalCode: address.postalCode || '',
+      country: address.country || ''
     },
-    links: { linkedin: '', portfolio: '', github: '' },
+    links: { linkedin: linkedin, portfolio: '', github: github },
     education: education || { school: '', degree: '', field: '', gradYear: '' },
     workExperience: workExperience,
     languages: languages,
-    skills: skills
+    skills: skills,
+    essays: { aboutMe: aboutMe, whyThisRole: '', strengths: '' }
   };
 }
 
@@ -1278,7 +1444,7 @@ function extractProfileByPattern(text) {
 function profileHasData(profile) {
   if (!profile) return false;
   var p = profile.personal || {};
-  if (p.firstName || p.lastName || p.email || p.phone) return true;
+  if (p.firstName || p.lastName || p.email || p.phone || p.addressLine || p.city || p.country) return true;
   var links = profile.links || {};
   if (links.linkedin || links.portfolio || links.github) return true;
   var edu = profile.education || {};
@@ -1286,6 +1452,8 @@ function profileHasData(profile) {
   if (profile.workExperience && profile.workExperience.length) return true;
   if (profile.languages && profile.languages.length) return true;
   if (profile.skills && profile.skills.length) return true;
+  var essays = profile.essays || {};
+  if (essays.aboutMe) return true;
   return false;
 }
 

@@ -353,6 +353,9 @@ import { importCvFromFile } from './modules/cv-import.js';
     setIfPresent(el.eduField, edu.field);
     setIfPresent(el.eduGradYear, edu.gradYear);
 
+    var essays = profile.essays || {};
+    setIfPresent(el.aboutMe, essays.aboutMe);
+
     if (profile.workExperience && profile.workExperience.length) {
       captureWorkList();
       workList = mergeEntries(workList, profile.workExperience, function (w) {
@@ -361,18 +364,21 @@ import { importCvFromFile } from './modules/cv-import.js';
       renderWorkList();
     }
 
+    // Unlike work experience, languages and skills are replaced outright
+    // rather than merged — a CV's own languages/skills list is a complete,
+    // current snapshot, so a stale entry from a previous import (or from
+    // hand-editing) should not survive alongside it. mergeEntries([], ...)
+    // still dedupes the CV's own list case-insensitively.
     if (profile.languages && profile.languages.length) {
-      captureLanguagesList();
-      languagesList = mergeEntries(languagesList, profile.languages, function (l) {
+      languagesList = mergeEntries([], profile.languages, function (l) {
         return (l.language || '').trim().toLowerCase();
       });
       renderLanguagesList();
     }
 
     if (profile.skills && profile.skills.length) {
-      var existingSkills = el.skills.value.split(',').map(function (s) { return s.trim(); }).filter(Boolean);
-      var mergedSkills = mergeEntries(existingSkills, profile.skills, function (s) { return s.trim().toLowerCase(); });
-      el.skills.value = mergedSkills.join(', ');
+      var dedupedSkills = mergeEntries([], profile.skills, function (s) { return s.trim().toLowerCase(); });
+      el.skills.value = dedupedSkills.join(', ');
     }
   }
 
